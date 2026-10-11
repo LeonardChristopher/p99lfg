@@ -34,6 +34,41 @@ static SyncState g_sync;
 static int g_sync_thread_run;
 static HANDLE g_sync_thread;
 
+static FILE *g_log;
+
+static void log_open(void)
+{
+    char path[LFG_PATH_MAX];
+    GetModuleFileNameA(NULL, path, sizeof(path));
+    char *slash = strrchr(path, '\\');
+    if (slash)
+        strcpy(slash + 1, "p99lfg.log");
+    else
+        strcat(path, ".log");
+    g_log = fopen(path, "w");
+}
+
+static void log_printf(const char *fmt, ...)
+{
+    if (!g_log)
+        return;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(g_log, fmt, ap);
+    va_end(ap);
+    fflush(g_log);
+}
+
+static LONG WINAPI crash_handler(EXCEPTION_POINTERS *ep)
+{
+    if (g_log) {
+        fprintf(g_log, "CRASH code=%08lx addr=%p\n",
+                (unsigned long)ep->ExceptionRecord->ExceptionCode,
+                ep->ExceptionRecord->ExceptionAddress);
+        fflush(g_log);
+    }
+    return EXCEPTION_EXECUTE_HANDLER;
+}
 static const char *DEFAULT_RELAYS[] = {
     "wss://nos.lol",
     "wss://relay.damus.io",
@@ -299,41 +334,6 @@ static void guess_default_dir(char *out, size_t outsz)
     snprintf(out, outsz, "%s", "C:\\Program Files (x86)\\Sony\\EverQuest");
 }
 
-static FILE *g_log;
-
-static void log_open(void)
-{
-    char path[LFG_PATH_MAX];
-    GetModuleFileNameA(NULL, path, sizeof(path));
-    char *slash = strrchr(path, '\\');
-    if (slash)
-        strcpy(slash + 1, "p99lfg.log");
-    else
-        strcat(path, ".log");
-    g_log = fopen(path, "w");
-}
-
-static void log_printf(const char *fmt, ...)
-{
-    if (!g_log)
-        return;
-    va_list ap;
-    va_start(ap, fmt);
-    vfprintf(g_log, fmt, ap);
-    va_end(ap);
-    fflush(g_log);
-}
-
-static LONG WINAPI crash_handler(EXCEPTION_POINTERS *ep)
-{
-    if (g_log) {
-        fprintf(g_log, "CRASH code=%08lx addr=%p\n",
-                (unsigned long)ep->ExceptionRecord->ExceptionCode,
-                ep->ExceptionRecord->ExceptionAddress);
-        fflush(g_log);
-    }
-    return EXCEPTION_EXECUTE_HANDLER;
-}
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
 {
