@@ -31,6 +31,9 @@ typedef struct {
 /* Callback when a remote player's LFG event arrives. */
 typedef void (*SyncOnEvent)(const SyncRemoteEntry *entry, const char *pubkey, void *userdata);
 
+/* Callback when a kind-4 DM arrives: sender pubkey + NIP-04 content blob. */
+typedef void (*SyncOnDm)(const char *sender_pubkey, const char *content, void *userdata);
+
 typedef struct {
     SyncRelayState relays[SYNC_MAX_RELAYS];
     int nrelays;
@@ -38,7 +41,9 @@ typedef struct {
     char pubkey[NOSTR_PUBKEY_HEX];
     char server[32];
     SyncOnEvent on_event;
+    SyncOnDm on_dm;
     void *userdata;
+    void *dm_userdata;
 } SyncState;
 
 void sync_init(SyncState *s, const char *keyfile_path, const char *server,
@@ -61,5 +66,8 @@ void sync_poll(SyncState *s);
 /* Parse a relay message ("[\"EVENT\",sub,{...}]" or "[\"OK\",...]"). Returns 1
  * if an EVENT was parsed and cb fired, 0 if not, -1 on malformed input. */
 int sync_handle_message(SyncState *s, const char *msg);
+
+/* Set the DM callback (may be NULL). */
+#define sync_set_dm_callback(s, cb, ud) do { (s)->on_dm = (cb); (s)->dm_userdata = (ud); } while (0)
 
 #endif

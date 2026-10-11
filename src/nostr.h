@@ -23,6 +23,8 @@ typedef struct {
     char content[512];
     char sig[NOSTR_SIG_HEX];
     char dtag[128];
+    /* kind-4 DM only: recipient pubkey tag ("p"). Empty for LFG events. */
+    char ptag[NOSTR_PUBKEY_HEX];
 } NostrEvent;
 
 /* Load or create identity key at path (hex secp256k1 secret key). Returns 0 on success. */

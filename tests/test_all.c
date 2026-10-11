@@ -3,6 +3,10 @@
 #include "sha256.h"
 #include "sync.h"
 #include "ws_client.h"
+#include "aes.h"
+#include "chat.h"
+#include "fav.h"
+#include "qrcodegen.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -219,6 +223,87 @@ static void test_key_import(void)
     remove(path);
 }
 
+/* NIP-04 DM round trip: two identities, encrypt to peer, decrypt as peer. */
+static void test_chat_roundtrip(void)
+{
+    const char *alice_keyfile = "/tmp/p99lfg_test_alice.key";
+    const char *bob_keyfile = "/tmp/p99lfg_test_bob.key";
+    remove(alice_keyfile);
+    remove(bob_keyfile);
+
+    char alice_pub[65] = {0}, bob_pub[65] = {0};
+    CHECK(nostr_identity_load(alice_keyfile, alice_pub) == 0, "alice identity");
+    CHECK(nostr_identity_load(bob_keyfile, bob_pub) == 0, "bob identity");
+    char alice_sk[65] = {0}, bob_sk[65] = {0};
+    FILE *f = fopen(alice_keyfile, "r"); fscanf(f, "%64s", alice_sk); fclose(f);
+    f = fopen(bob_keyfile, "r"); fscanf(f, "%64s", bob_sk); fclose(f);
+
+    /* alice encrypts to bob */
+    char content[1200];
+    const char *msg = "hey, group up in sebilis?";
+    CHECK(chat_encrypt_content(alice_sk, bob_pub, msg, content, sizeof(content)) == 0,
+          "chat encrypt");
+    CHECK(strstr(content, "?iv=") != NULL, "chat content has iv");
+
+    /* bob decrypts from alice */
+    char plain[600];
+    CHECK(chat_try_decrypt(bob_sk, alice_pub, content, plain, sizeof(plain)) == 0,
+          "chat decrypt");
+    CHECK(strcmp(plain, msg) == 0, "chat plaintext round trip");
+
+    /* wrong key fails */
+    const char *mallory_keyfile = "/tmp/p99lfg_test_mallory.key";
+    remove(mallory_keyfile);
+    char mallory_pub[65];
+    nostr_identity_load(mallory_keyfile, mallory_pub);
+    char mallory_sk[65] = {0};
+    f = fopen(mallory_keyfile, "r"); fscanf(f, "%64s", mallory_sk); fclose(f);
+    CHECK(chat_try_decrypt(mallory_sk, alice_pub, content, plain, sizeof(plain)) != 0,
+          "chat decrypt fails for eavesdropper");
+
+    remove(alice_keyfile); remove(bob_keyfile); remove(mallory_keyfile);
+}
+
+
+
+/* QR payload encodes a 64-hex key (Windows shows it, phones scan it). */
+static void test_qr_key(void)
+{
+    /* via win32_qr.c is GDI-bound; test the vendored encoder directly */
+    uint8_t qrcode[qrcodegen_BUFFER_LEN_MAX];
+    uint8_t temp[qrcodegen_BUFFER_LEN_MAX];
+    const char *key = "0000000000000000000000000000000000000000000000000000000000000003";
+    bool ok = qrcodegen_encodeText(key, temp, qrcode, qrcodegen_Ecc_MEDIUM,
+                                   qrcodegen_VERSION_MIN, qrcodegen_VERSION_MAX,
+                                   qrcodegen_Mask_AUTO, true);
+    CHECK(ok, "qr encode 64-hex key");
+    CHECK(qrcodegen_getSize(qrcode) > 21, "qr has modules");
+}
+
+/* favourites: toggle, persistence, reload */
+static void test_favourites(void)
+{
+    const char *path = "/tmp/p99lfg_test_favs.txt";
+    remove(path);
+
+    FavList *f = fav_load(path);
+    CHECK(f && fav_count(f) == 0, "fav starts empty");
+    CHECK(fav_toggle(f, "Soandso") == 0, "fav add");
+    CHECK(fav_has(f, "Soandso"), "fav has after add");
+    CHECK(fav_toggle(f, "Other") == 0, "fav add second");
+    CHECK(fav_count(f) == 2, "fav count 2");
+    CHECK(fav_toggle(f, "Soandso") == 0, "fav remove");
+    CHECK(!fav_has(f, "Soandso"), "fav removed");
+    fav_free(f);
+
+    /* persistence */
+    f = fav_load(path);
+    CHECK(f && fav_count(f) == 1, "fav persisted");
+    CHECK(fav_has(f, "Other"), "fav persisted content");
+    fav_free(f);
+    remove(path);
+}
+
 int main(void)
 {
     test_sha256_vectors();
@@ -227,6 +312,9 @@ int main(void)
     test_core_parser();
     test_sync_messages();
     test_key_import();
+    test_favourites();
+    test_qr_key();
+    test_chat_roundtrip();
     printf("\n%s (%d failures)\n", fails ? "TESTS FAILED" : "ALL TESTS PASSED", fails);
     return fails ? 1 : 0;
 }

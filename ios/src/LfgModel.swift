@@ -12,6 +12,8 @@ final class LfgModel: ObservableObject {
     @Published private(set) var myPubkey: String = ""
     @Published private(set) var relayStatus: String = ""
     @Published private(set) var lastSync: Date?
+    @Published private(set) var favourites: [String] = []
+    @Published private(set) var conversations: [String: [ChatMessage]] = [:]
 
     struct Entry: Identifiable, Equatable {
         let id: String
@@ -22,11 +24,20 @@ final class LfgModel: ObservableObject {
         let lastSeen: Date
     }
 
+    struct ChatMessage: Identifiable, Equatable {
+        let id: String
+        let fromMe: Bool
+        let text: String
+        let at: Date
+    }
+
     private var state: OpaquePointer?
     private var syncState: UnsafeMutablePointer<SyncState>?
+    private var favList: OpaquePointer?
     private var syncThread: Thread?
     private var running = false
     private var wrapper: CallbackWrapper?
+    private var dmWrapper: DmCallbackWrapper?
 
     private static let relays = ["wss://nos.lol", "wss://relay.damus.io"]
 
@@ -39,9 +50,21 @@ final class LfgModel: ObservableObject {
         return dir + "/p99lfg.key"
     }
 
+    private var favPath: String {
+        let dir = NSHomeDirectory() + "/Documents"
+        return dir + "/p99lfg_favourites.txt"
+    }
+
     private final class CallbackWrapper {
         let callback: SyncOnEvent
         init(_ cb: @escaping @convention(c) (UnsafePointer<SyncRemoteEntry>?, UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void) {
+            callback = cb
+        }
+    }
+
+    private final class DmCallbackWrapper {
+        let callback: @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void
+        init(_ cb: @escaping @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void) {
             callback = cb
         }
     }
@@ -51,6 +74,7 @@ final class LfgModel: ObservableObject {
 
         state = lfg_new()
         lfg_set_stale_minutes(state, 30)
+        favList = fav_load(favPath)
 
         var pubkey = [CChar](repeating: 0, count: 65)
         nostr_identity_load(keyPath, &pubkey)
@@ -59,9 +83,13 @@ final class LfgModel: ObservableObject {
         syncState = UnsafeMutablePointer<SyncState>.allocate(capacity: 1)
         syncState.initialize(to: SyncState())
 
-        wrapper = CallbackWrapper { entry, _, userdata in
+        wrapper = CallbackWrapper { entry, pubkey, userdata in
             guard let entry, let userdata else { return }
             let model = Unmanaged<LfgModel>.fromOpaque(userdata).takeUnretainedValue()
+            if entry.pointee.lfg != 0, let pubkey {
+                model.recordPubkey(name: String(cString: entry.pointee.name),
+                                   pubkey: String(cString: pubkey))
+            }
             model.stateQueue.sync {
                 if entry.pointee.lfg != 0 {
                     lfg_add_manual(model.state, entry.pointee.name,
@@ -73,11 +101,21 @@ final class LfgModel: ObservableObject {
             DispatchQueue.main.async { model.refresh() }
         }
 
+        dmWrapper = DmCallbackWrapper { sender, content, userdata in
+            guard let sender, let content, let userdata else { return }
+            let model = Unmanaged<LfgModel>.fromOpaque(userdata).takeUnretainedValue()
+            model.handleIncomingDm(sender: String(cString: sender),
+                                    content: String(cString: content))
+        }
+
         sync_init(syncState, keyPath, "green", wrapper!.callback,
                   Unmanaged.passUnretained(self).toOpaque())
+        sync_set_dm_callback(syncState, dmWrapper!.callback,
+                             Unmanaged.passUnretained(self).toOpaque())
         for r in Self.relays {
             r.withCString { sync_add_relay(syncState, $0) }
         }
+        refreshFavourites()
         refresh()
     }
 
@@ -89,6 +127,9 @@ final class LfgModel: ObservableObject {
             }
             if let state {
                 lfg_free(state)
+            }
+            if let favList {
+                fav_free(favList)
             }
         }
     }
@@ -150,77 +191,85 @@ final class LfgModel: ObservableObject {
         entries = out
     }
 
-    func markLfg(name: String, zone: String, detail: String) {
-        guard let state, let sp = syncState else { return }
+    // MARK: - Favourites
+
+    private func refreshFavourites() {
+        guard let favList else { return }
+        var out: [String] = []
         stateQueue.sync {
-            name.withCString { n in
-                zone.withCString { z in
-                    detail.withCString { d in
-                        lfg_add_manual(state, n, z, d)
-                    }
+            let n = fav_count(favList)
+            for i in 0..<n {
+                if let name = fav_get(favList, i) {
+                    out.append(String(cString: name))
                 }
             }
         }
-        refresh()
-        publishAsync(sp: sp, name: name, zone: zone, detail: detail, lfg: true)
+        favourites = out
     }
 
-    func remove(name: String) {
-        guard let state else { return }
+    func isFavourite(_ name: String) -> Bool {
+        favourites.contains(name)
+    }
+
+    func toggleFavourite(_ name: String) {
+        guard let favList else { return }
         stateQueue.sync {
-            _ = name.withCString { lfg_remove(state, $0) }
+            _ = fav_toggle(favList, name)
         }
-        refresh()
-        if let sp = syncState {
-            publishAsync(sp: sp, name: name, zone: "", detail: "", lfg: false)
-        }
+        refreshFavourites()
     }
 
-    /// Import the Windows app's Nostr key so both devices share one identity.
-    /// Returns the derived pubkey on success, nil on a bad key.
-    func importKey(hex: String) -> String? {
-        let hexOnly = hex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        var pubkey = [CChar](repeating: 0, count: 65)
-        let ok = hexOnly.withCString { cstr -> Int32 in
-            nostr_import_key(keyPath, cstr, &pubkey)
-        }
-        guard ok == 0, let sp = syncState else { return nil }
-        syncQueue.sync {
-            _ = sync_reload_key(sp, keyPath)
-        }
-        let pub = String(cString: pubkey)
-        DispatchQueue.main.async { self.myPubkey = pub }
-        return pub
-    }
+    // MARK: - Chat
 
-    /// The secret key, for copying to another device (e.g. the Windows app).
-    func exportKeyHex() -> String? {
-        guard let secret = try? String(contentsOfFile: keyPath, encoding: .ascii) else {
-            return nil
-        }
-        return secret.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    func setServer(_ server: String) {
-        guard let sp = syncState else { return }
-        syncQueue.sync {
-            server.withCString { s in
-                withUnsafeMutablePointer(to: &sp.pointee.server) { dst in
-                    _ = strncpy(dst, s, MemoryLayout.size(ofValue: sp.pointee.server) - 1)
-                    dst[MemoryLayout.size(ofValue: sp.pointee.server) - 1] = 0
-                }
-            }
-        }
-    }
-
-    private func publishAsync(sp: UnsafeMutablePointer<SyncState>,
-                             name: String, zone: String, detail: String, lfg: Bool) {
+    func sendChat(to name: String, text: String) {
+        guard let pub = pubkeyFor(name), let sp = syncState else { return }
+        appendMessage(name: name, text: text, fromMe: true)
         publishQueue.async {
-            var content = [CChar](repeating: 0, count: 512)
-            _ = sync_build_content(&content, content.count, name, zone, detail, lfg ? 1 : 0)
-            self.syncQueue.sync {
-                _ = sync_publish(sp, &content)
+            pub.withCString { pp in
+                text.withCString { tp in
+                    _ = self.syncQueue.sync { chat_send_message(sp, pp, tp) }
+                }
             }
+        }
+    }
+
+    /// Map of character name -> nostr pubkey from recent LFG events.
+    private var nameToPubkey: [String: String] = [:]
+
+    func recordPubkey(name: String, pubkey: String) {
+        nameToPubkey[name] = pubkey
+    }
+
+    func pubkeyFor(_ name: String) -> String? {
+        nameToPubkey[name]
+    }
+
+    private func handleIncomingDm(sender: String, content: String) {
+        guard let sp = syncState else { return }
+        var plain = [CChar](repeating: 0, count: 600)
+        sender.withCString { sptr in
+            content.withCString { cptr in
+                _ = chat_try_decrypt(sp.pointee.privkey, sptr, cptr,
+                                     &plain, plain.count)
+            }
+        }
+        let text = String(cString: plain)
+        guard !text.isEmpty else { return }
+        let name = nameToPubkey.first(where: { $0.value == sender })?.key ?? sender.prefix(8) + "…"
+        DispatchQueue.main.async {
+            self.appendMessage(name: name, text: text, fromMe: false)
+        }
+    }
+
+    private func appendMessage(name: String, text: String, fromMe: Bool) {
+        let msg = ChatMessage(
+            id: UUID().uuidString,
+            fromMe: fromMe,
+            text: text,
+            at: Date()
+        )
+        DispatchQueue.main.async {
+            self.conversations[name, default: []].append(msg)
         }
     }
 }

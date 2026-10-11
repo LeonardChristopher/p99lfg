@@ -3,6 +3,9 @@
  */
 #include "core.h"
 #include "sync.h"
+#include "chat.h"
+#include "fav.h"
+#include "win32_qr.h"
 
 #include <windows.h>
 #include <commdlg.h>
@@ -28,6 +31,9 @@
 #define ID_ST_DIR_LBL 107
 #define ID_BTN_KEY_COPY 110
 #define ID_BTN_KEY_PASTE 111
+#define ID_BTN_KEY_QR 112
+#define ID_BTN_FAV 113
+#define ID_BTN_CHAT 114
 
 static LfgState *g_state;
 static HWND g_hwnd, g_list, g_ed_name, g_ed_zone, g_st_dir;
@@ -81,6 +87,153 @@ static const char *DEFAULT_RELAYS[] = {
     "wss://relay.damus.io",
 };
 
+static FavList *g_favs;
+/* name -> pubkey of recently seen LFG players, for chat addressing */
+#define NAME_PUB_MAX 256
+static char g_np_names[NAME_PUB_MAX][LFG_NAME_MAX];
+static char g_np_pubs[NAME_PUB_MAX][NOSTR_PUBKEY_HEX];
+static int g_np_count;
+
+static void name_pub_record(const char *name, const char *pubkey)
+{
+    for (int i = 0; i < g_np_count; i++) {
+        if (strcmp(g_np_names[i], name) == 0) {
+            snprintf(g_np_pubs[i], sizeof(g_np_pubs[i]), "%s", pubkey);
+            return;
+        }
+    }
+    if (g_np_count < NAME_PUB_MAX) {
+        snprintf(g_np_names[g_np_count], LFG_NAME_MAX, "%s", name);
+        snprintf(g_np_pubs[g_np_count], sizeof(g_np_pubs[0]), "%s", pubkey);
+        g_np_count++;
+    }
+}
+
+const char *name_pub_lookup(const char *name)
+{
+    for (int i = 0; i < g_np_count; i++)
+        if (strcmp(g_np_names[i], name) == 0)
+            return g_np_pubs[i];
+    return NULL;
+}
+
+/* ---- chat window ---- */
+static HWND g_chat_hwnd, g_chat_list, g_chat_edit_in, g_chat_edit_out, g_chat_peer_lbl;
+static char g_chat_peer_name[LFG_NAME_MAX];
+#define WM_DM_RECEIVED (WM_USER + 3)
+#define ID_CHAT_LIST 200
+#define ID_CHAT_SEND 201
+#define ID_CHAT_IN 202
+#define ID_CHAT_PEER 203
+
+static void chat_add_line(const char *fmt, ...)
+{
+    if (!g_chat_list)
+        return;
+    char buf[600];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    SendMessageA(g_chat_list, LB_ADDSTRING, 0, (LPARAM)buf);
+    int n = (int)SendMessageA(g_chat_list, LB_GETCOUNT, 0, 0);
+    SendMessageA(g_chat_list, LB_SETCURSEL, n - 1, 0);
+}
+
+static void on_dm_received(const char *sender, const char *content, void *ud)
+{
+    (void)ud;
+    char plain[600];
+    if (chat_try_decrypt(g_sync.privkey, sender, content, plain, sizeof(plain)) != 0)
+        return;
+    const char *name = sender;
+    for (int i = 0; i < g_np_count; i++)
+        if (strcmp(g_np_pubs[i], sender) == 0)
+            name = g_np_names[i];
+    log_printf("DM from %s: %s\n", name, plain);
+    if (!g_chat_hwnd)
+        return;
+    chat_add_line("[%s] %s", name, plain);
+}
+
+static LRESULT CALLBACK ChatWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_CREATE: {
+        CREATESTRUCTA *cs = (CREATESTRUCTA *)lp;
+        HFONT hf = (HFONT)cs->lpCreateParams;
+        g_chat_peer_lbl = CreateWindowA("STATIC", "Peer:", WS_CHILD | WS_VISIBLE,
+                                        8, 8, 470, 18, hwnd, (HMENU)ID_CHAT_PEER, NULL, NULL);
+        g_chat_list = CreateWindowExA(WS_EX_CLIENTEDGE, "LISTBOX", NULL,
+                                      WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOINTEGRALHEIGHT | LBS_NOTIFY,
+                                      8, 30, 470, 300, hwnd, (HMENU)ID_CHAT_LIST, NULL, NULL);
+        g_chat_edit_in = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
+                                        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                                        8, 340, 380, 22, hwnd, (HMENU)ID_CHAT_IN, NULL, NULL);
+        CreateWindowA("BUTTON", "Send",
+                      WS_CHILD | WS_VISIBLE, 395, 340, 80, 24, hwnd, (HMENU)ID_CHAT_SEND, NULL, NULL);
+        HWND ctrl = GetWindow(hwnd, GW_CHILD);
+        while (ctrl) {
+            SendMessageA(ctrl, WM_SETFONT, (WPARAM)hf, TRUE);
+            ctrl = GetWindow(ctrl, GW_HWNDNEXT);
+        }
+        return 0;
+    }
+    case WM_COMMAND:
+        if (LOWORD(wp) == ID_CHAT_SEND) {
+            char text[512];
+            GetWindowTextA(g_chat_edit_in, text, sizeof(text));
+            if (!text[0])
+                return 0;
+            const char *pub = name_pub_lookup(g_chat_peer_name);
+            if (pub) {
+                chat_add_line("[you] %s", text);
+                if (chat_send_message(&g_sync, pub, text) != 0)
+                    chat_add_line("(send failed - check relays)");
+            } else {
+                chat_add_line("(no pubkey known for %s yet)", g_chat_peer_name);
+            }
+            SetWindowTextA(g_chat_edit_in, "");
+            return 0;
+        }
+        break;
+    case WM_DESTROY:
+        g_chat_hwnd = NULL;
+        g_chat_list = NULL;
+        return 0;
+    }
+    return DefWindowProcA(hwnd, msg, wp, lp);
+}
+
+static void open_chat(const char *name)
+{
+    snprintf(g_chat_peer_name, sizeof(g_chat_peer_name), "%s", name);
+    char title[LFG_NAME_MAX + 16];
+    snprintf(title, sizeof(title), "Chat - %s", name);
+    if (g_chat_hwnd) {
+        SetWindowTextA(g_chat_hwnd, title);
+        SetWindowTextA(g_chat_peer_lbl, title);
+        ShowWindow(g_chat_hwnd, SW_SHOW);
+        return;
+    }
+    WNDCLASSA wc = {0};
+    wc.lpfnWndProc = ChatWndProc;
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = "p99lfg_chat";
+    RegisterClassA(&wc);
+    HFONT hf = CreateFontA(-12, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+                           ANSI_CHARSET, 0, 0, CLEARTYPE_QUALITY,
+                           DEFAULT_PITCH | FF_DONTCARE, "Tahoma");
+    g_chat_hwnd = CreateWindowExA(0, "p99lfg_chat", title,
+                                  WS_OVERLAPPEDWINDOW,
+                                  CW_USEDEFAULT, CW_USEDEFAULT, 510, 430,
+                                  g_hwnd, NULL, wc.hInstance, hf);
+    ShowWindow(g_chat_hwnd, SW_SHOW);
+    UpdateWindow(g_chat_hwnd);
+}
+
 static void upsert_remote(const SyncRemoteEntry *e)
 {
     if (e->lfg)
@@ -91,9 +244,11 @@ static void upsert_remote(const SyncRemoteEntry *e)
 
 static void on_remote_event(const SyncRemoteEntry *entry, const char *pubkey, void *ud)
 {
-    (void)pubkey; (void)ud;
+    (void)ud;
     if (!g_hwnd)
         return;
+    if (pubkey && entry->lfg)
+        name_pub_record(entry->name, pubkey);
     upsert_remote(entry);
     PostMessageA(g_hwnd, WM_REMOTE, 0, 0);
 }
@@ -130,12 +285,12 @@ static void populate_list(void)
     for (int i = 0; i < lfg_count(g_state); i++) {
         const LfgEntry *e = lfg_get(g_state, i);
         char row[256];
-        snprintf(row, sizeof(row), "%s  [%s]  %s%s%s",
+        snprintf(row, sizeof(row), "%s%s  [%s]  %s%s",
+                 (g_favs && fav_has(g_favs, e->name)) ? "* " : "",
                  e->name,
                  e->detail[0] ? e->detail : "?",
                  e->zone[0] ? e->zone : "-",
-                 e->source == LFG_SRC_MANUAL ? "  (manual)" : "",
-                 "");
+                 e->source == LFG_SRC_MANUAL ? "  (manual)" : "");
         SendMessageA(g_list, LB_ADDSTRING, 0, (LPARAM)row);
     }
 }
@@ -189,6 +344,16 @@ static void get_key_path(char *out, size_t outsz)
         strcat(out, ".key");
 }
 
+static void get_fav_path(char *out, size_t outsz)
+{
+    get_key_path(out, outsz);
+    char *slash = strrchr(out, '\\');
+    if (slash)
+        strcpy(slash + 1, "p99lfg_favs.txt");
+    else
+        strcat(out, ".favs");
+}
+
 /* Copy the Nostr secret key to the clipboard so it can be entered on a
  * phone — sharing the key shares the Nostr identity across devices. */
 static void on_key_copy(void)
@@ -220,6 +385,65 @@ static void on_key_copy(void)
                 "p99lfg", MB_OK | MB_ICONINFORMATION);
 }
 
+/* ---- QR popup window ---- */
+static const char *QR_WND_CLASS = "p99lfg_qr";
+
+static LRESULT CALLBACK QrWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        int total = qr_total_px(6);
+        qr_draw(hdc, 10, 10, 6);
+        SetBkMode(hdc, TRANSPARENT);
+        static const char hint[] = "Scan with the p99lfg phone app to import your identity.";
+        TextOutA(hdc, 10, 10 + total + 4, hint, (int)strlen(hint));
+        TextOutA(hdc, 10, 10 + total + 22,
+                 qr_payload(), (int)strlen(qr_payload()));
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_DESTROY:
+        return 0;
+    }
+    return DefWindowProcA(hwnd, msg, wp, lp);
+}
+
+static void on_key_qr(HWND hwnd)
+{
+    char keypath[LFG_PATH_MAX];
+    get_key_path(keypath, sizeof(keypath));
+    FILE *f = fopen(keypath, "r");
+    if (!f)
+        return;
+    char hex[NOSTR_PRIVKEY_HEX] = {0};
+    int ok = fscanf(f, "%64s", hex) == 1;
+    fclose(f);
+    if (!ok || qr_encode_payload(hex) != 0) {
+        MessageBoxA(hwnd, "Could not encode the key as a QR code.",
+                    "p99lfg", MB_OK | MB_ICONERROR);
+        return;
+    }
+    WNDCLASSA wc = {0};
+    wc.lpfnWndProc = QrWndProc;
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = QR_WND_CLASS;
+    RegisterClassA(&wc);
+    int total = qr_total_px(6);
+    RECT rw = { 0, 0, total + 30, total + 90 };
+    AdjustWindowRect(&rw, WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX), FALSE);
+    HWND q = CreateWindowExA(0, QR_WND_CLASS, "Your p99lfg key",
+                             WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX),
+                             CW_USEDEFAULT, CW_USEDEFAULT,
+                             rw.right - rw.left, rw.bottom - rw.top,
+                             hwnd, NULL, wc.hInstance, NULL);
+    ShowWindow(q, SW_SHOW);
+    UpdateWindow(q);
+}
+
 static void on_key_paste(HWND hwnd)
 {
     if (!OpenClipboard(hwnd))
@@ -246,6 +470,29 @@ static void on_key_paste(HWND hwnd)
         MessageBoxA(hwnd, "Clipboard does not contain a valid key (64 hex chars).",
                     "p99lfg", MB_OK | MB_ICONERROR);
     }
+}
+
+static void on_favourite(void)
+{
+    LRESULT sel = SendMessageA(g_list, LB_GETCURSEL, 0, 0);
+    if (sel == LB_ERR || !g_favs)
+        return;
+    const LfgEntry *e = lfg_get(g_state, (int)sel);
+    if (!e)
+        return;
+    fav_toggle(g_favs, e->name);
+    populate_list();
+}
+
+static void on_chat_selected(void)
+{
+    LRESULT sel = SendMessageA(g_list, LB_GETCURSEL, 0, 0);
+    if (sel == LB_ERR)
+        return;
+    const LfgEntry *e = lfg_get(g_state, (int)sel);
+    if (!e)
+        return;
+    open_chat(e->name);
 }
 
 static void on_pick_dir(HWND hwnd)
@@ -298,6 +545,12 @@ static void create_controls(HWND hwnd, HFONT hf)
                   WS_CHILD | WS_VISIBLE, 10, 370, 75, 24, hwnd, (HMENU)ID_BTN_KEY_COPY, NULL, NULL);
     CreateWindowA("BUTTON", "Paste key",
                   WS_CHILD | WS_VISIBLE, 90, 370, 75, 24, hwnd, (HMENU)ID_BTN_KEY_PASTE, NULL, NULL);
+    CreateWindowA("BUTTON", "Show key QR",
+                  WS_CHILD | WS_VISIBLE, 170, 370, 95, 24, hwnd, (HMENU)ID_BTN_KEY_QR, NULL, NULL);
+    CreateWindowA("BUTTON", "Favourite",
+                  WS_CHILD | WS_VISIBLE, 270, 370, 80, 24, hwnd, (HMENU)ID_BTN_FAV, NULL, NULL);
+    CreateWindowA("BUTTON", "Chat",
+                  WS_CHILD | WS_VISIBLE, 355, 370, 60, 24, hwnd, (HMENU)ID_BTN_CHAT, NULL, NULL);
 
     HWND ctrl = GetWindow(hwnd, GW_CHILD);
     while (ctrl) {
@@ -331,6 +584,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case ID_BTN_REMOVE: on_remove(); return 0;
         case ID_BTN_KEY_COPY: on_key_copy(); return 0;
         case ID_BTN_KEY_PASTE: on_key_paste(hwnd); return 0;
+        case ID_BTN_KEY_QR: on_key_qr(hwnd); return 0;
+        case ID_BTN_FAV: on_favourite(); return 0;
+        case ID_BTN_CHAT: on_chat_selected(); return 0;
         }
         break;
     case WM_DESTROY:
@@ -436,6 +692,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     log_printf("key path: %s\n", keypath);
     sync_init(&g_sync, keypath, "green", on_remote_event, NULL);
     log_printf("sync init done, pubkey=%s\n", g_sync.pubkey);
+    sync_set_dm_callback(&g_sync, on_dm_received, NULL);
+    {
+        char fav_path[LFG_PATH_MAX];
+        get_fav_path(fav_path, sizeof(fav_path));
+        g_favs = fav_load(fav_path);
+    }
     for (int i = 0; i < (int)(sizeof(DEFAULT_RELAYS)/sizeof(DEFAULT_RELAYS[0])); i++)
         sync_add_relay(&g_sync, DEFAULT_RELAYS[i]);
 

@@ -143,6 +143,28 @@ int sync_handle_message(SyncState *s, const char *msg)
     const char *evobj = strchr(msg + 8, '{');
     if (!evobj)
         return -1;
+
+    /* kind-4 DM: hand the raw content to the DM callback for decryption. */
+    {
+        char kindstr[16] = {0};
+        const char *kp = strstr(evobj, "\"kind\":");
+        if (kp) {
+            const char *d = kp + 7;
+            size_t i = 0;
+            while (*d >= '0' && *d <= '9' && i < sizeof(kindstr) - 1)
+                kindstr[i++] = *d++;
+            if (strcmp(kindstr, "4") == 0 && s->on_dm) {
+                char content[1200];
+                char sender[80];
+                if (json_get_string(evobj, "content", content, sizeof(content)) >= 0 &&
+                    json_get_string(evobj, "pubkey", sender, sizeof(sender)) >= 0) {
+                    s->on_dm(sender, content, s->dm_userdata);
+                    return 1;
+                }
+            }
+        }
+    }
+
     char content[600];
     if (json_get_string(evobj, "content", content, sizeof(content)) < 0)
         return -1;

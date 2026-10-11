@@ -20,36 +20,25 @@ struct ContentView: View {
                     Text("Project 1999 server")
                 }
 
+                Section("Favourites") {
+                    if favouriteEntries.isEmpty {
+                        Text("Star a player to pin them here.")
+                            .foregroundColor(.secondary)
+                            .font(.footnote)
+                    }
+                    ForEach(favouriteEntries) { e in
+                        row(e)
+                    }
+                }
+
                 Section {
                     if model.entries.isEmpty {
                         Text("No one is LFG right now.\nMark yourself LFG or wait for sync.")
                             .foregroundColor(.secondary)
                             .font(.footnote)
                     }
-                    ForEach(model.entries) { e in
-                        HStack(spacing: 8) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(e.name)
-                                    .font(.body.weight(.semibold))
-                                Text(rowSubtitle(e))
-                                    .font(.footnote)
-                                    .foregroundColor(.secondary)
-                            }
-                            Spacer()
-                            Text("LFG")
-                                .font(.caption2.weight(.bold))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(Capsule().fill(Color.blue))
-                        }
-                        .swipeActions {
-                            Button(role: .destructive) {
-                                model.remove(name: e.name)
-                            } label: {
-                                Label("Remove", systemImage: "person.badge.minus")
-                            }
-                        }
+                    ForEach(otherEntries) { e in
+                        row(e)
                     }
                 } header: {
                     Text("Looking for group")
@@ -96,6 +85,49 @@ struct ContentView: View {
             .onAppear { model.start() }
             .onChange(of: server) { newValue in
                 model.setServer(newValue)
+            }
+        }
+    }
+
+    private var favouriteEntries: [LfgModel.Entry] {
+        model.entries.filter { model.isFavourite($0.name) }
+    }
+
+    private var otherEntries: [LfgModel.Entry] {
+        model.entries.filter { !model.isFavourite($0.name) }
+    }
+
+    @ViewBuilder
+    private func row(_ e: LfgModel.Entry) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                model.toggleFavourite(e.name)
+            } label: {
+                Image(systemName: model.isFavourite(e.name) ? "star.fill" : "star")
+                    .foregroundColor(model.isFavourite(e.name) ? .yellow : .secondary)
+            }
+            .buttonStyle(.plain)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(e.name)
+                    .font(.body.weight(.semibold))
+                Text(rowSubtitle(e))
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            NavigationLink {
+                ChatView(name: e.name)
+            } label: {
+                Image(systemName: "bubble.right")
+                    .foregroundColor(.blue)
+            }
+            .buttonStyle(.plain)
+        }
+        .swipeActions {
+            Button(role: .destructive) {
+                model.remove(name: e.name)
+            } label: {
+                Label("Remove", systemImage: "person.badge.minus")
             }
         }
     }

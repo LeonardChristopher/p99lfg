@@ -5,5 +5,8 @@
 #include "nostr.h"
 #include "sync.h"
 #include "ws_client.h"
+#include "aes.h"
+#include "chat.h"
+#include "fav.h"
 
 #endif

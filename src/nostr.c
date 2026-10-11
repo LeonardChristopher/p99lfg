@@ -175,13 +175,24 @@ void nostr_serialize_for_id(const NostrEvent *ev, char *out, size_t outsz)
 {
     char esc_content[1024];
     json_escape(ev->content, esc_content, sizeof(esc_content));
-    snprintf(out, outsz,
-        "[0,\"%s\",%llu,%d,[[\"d\",\"%s\"],[\"t\",\"" LFG_TAG "\"]],\"%s\"]",
-        ev->pubkey,
-        (unsigned long long)ev->created_at,
-        ev->kind,
-        ev->dtag,
-        esc_content);
+    if (ev->ptag[0]) {
+        /* kind-4 DM: p tag for the recipient, t tag so our REQ filter matches */
+        snprintf(out, outsz,
+            "[0,\"%s\",%llu,%d,[[\"p\",\"%s\"],[\"t\",\"" LFG_TAG "\"]],\"%s\"]",
+            ev->pubkey,
+            (unsigned long long)ev->created_at,
+            ev->kind,
+            ev->ptag,
+            esc_content);
+    } else {
+        snprintf(out, outsz,
+            "[0,\"%s\",%llu,%d,[[\"d\",\"%s\"],[\"t\",\"" LFG_TAG "\"]],\"%s\"]",
+            ev->pubkey,
+            (unsigned long long)ev->created_at,
+            ev->kind,
+            ev->dtag,
+            esc_content);
+    }
 }
 
 int nostr_sign_event(NostrEvent *ev, const char *privkey_hex)
@@ -219,6 +230,14 @@ size_t nostr_event_message(const NostrEvent *ev, char *out, size_t outsz)
 {
     char esc_content[1024];
     json_escape(ev->content, esc_content, sizeof(esc_content));
+    if (ev->ptag[0]) {
+        return (size_t)snprintf(out, outsz,
+            "[\"EVENT\",{\"id\":\"%s\",\"pubkey\":\"%s\",\"created_at\":%llu,"
+            "\"kind\":%d,\"tags\":[[\"p\",\"%s\"],[\"t\",\"" LFG_TAG "\"]],"
+            "\"content\":\"%s\",\"sig\":\"%s\"}]",
+            ev->id, ev->pubkey, (unsigned long long)ev->created_at,
+            ev->kind, ev->ptag, esc_content, ev->sig);
+    }
     return (size_t)snprintf(out, outsz,
         "[\"EVENT\",{\"id\":\"%s\",\"pubkey\":\"%s\",\"created_at\":%llu,"
         "\"kind\":%d,\"tags\":[[\"d\",\"%s\"],[\"t\",\"" LFG_TAG "\"]],"
@@ -229,7 +248,9 @@ size_t nostr_event_message(const NostrEvent *ev, char *out, size_t outsz)
 
 size_t nostr_req_message(const char *subid, char *out, size_t outsz)
 {
+    /* LFG listings plus kind-4 DMs addressed to us (both #t-tagged p99lfg
+     * traffic and plain DMs). */
     return (size_t)snprintf(out, outsz,
-        "[\"REQ\",\"%s\",{\"kinds\":[%d],\"#t\":[\"" LFG_TAG "\"]}]",
+        "[\"REQ\",\"%s\",{\"kinds\":[%d,4],\"#t\":[\"" LFG_TAG "\"]}]",
         subid, NOSTR_KIND_LFG);
 }
