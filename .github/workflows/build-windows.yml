@@ -1,0 +1,32 @@
+name: build-windows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure secp256k1
+        run: cmake -B vendor/secp256k1/build -S vendor/secp256k1 -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DSECP256K1_ENABLE_BENCHMARK=OFF -DSECP256K1_ENABLE_TESTS=OFF -DSECP256K1_ENABLE_MODULE_SCHNORRSIG=ON -DSECP256K1_ENABLE_MODULE_ECDH=OFF -DSECP256K1_BUILD_EXAMPLES=OFF -DSECP256K1_BUILD_TESTS=OFF
+      - name: Build secp256k1
+        run: cmake --build vendor/secp256k1/build --config Release
+      - name: Build p99lfg.exe
+        run: |
+          gcc -O2 -Isrc -Ivendor/secp256k1/include -Ivendor/secp256k1/build/include src/win32_main.c src/core.c src/sha256.c src/nostr.c src/sync.c src/ws_client.c src/tls_schannel.c vendor/secp256k1/build/lib/libsecp256k1.a -lgdi32 -luser32 -lcomctl32 -lcomdlg32 -lshell32 -lole32 -lws2_32 -lcrypt32 -lsecur32 -o build/p99lfg.exe
+        shell: cmd
+      - name: Run tests
+        run: |
+          gcc -O2 -Isrc -Ivendor/secp256k1/include -Ivendor/secp256k1/build/include tests/test_all.c src/sha256.c src/nostr.c src/core.c vendor/secp256k1/build/lib/libsecp256k1.a -o build/test_all.exe
+          gcc -O2 -Isrc -Ivendor/secp256k1/include -Ivendor/secp256k1/build/include tests/test_ws.c src/ws_client.c src/sha256.c src/nostr.c vendor/secp256k1/build/lib/libsecp256k1.a -o build/test_ws.exe -lws2_32
+          build\test_all.exe
+        shell: cmd
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: p99lfg-windows-x64
+          path: build/p99lfg.exe

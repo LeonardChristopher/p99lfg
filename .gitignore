@@ -1,0 +1,6 @@
+build/
+vendor/secp256k1/build/
+vendor/secp256k1/build-mingw/
+*.o
+*.a
+*.exe
