@@ -5,13 +5,13 @@
 #ifdef _WIN32
 
 #define SECURITY_WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <ntdef.h>
 #include <sspi.h>
 #include <schannel.h>
 #include <security.h>
-#include <winsock2.h>
-#include <ws2tcpip.h>
 
 #include <stdio.h>
 #include <stdlib.h>

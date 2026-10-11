@@ -11,8 +11,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Configure secp256k1
-        run: cmake -B vendor/secp256k1/build -S vendor/secp256k1 -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DSECP256K1_ENABLE_BENCHMARK=OFF -DSECP256K1_ENABLE_TESTS=OFF -DSECP256K1_ENABLE_MODULE_SCHNORRSIG=ON -DSECP256K1_ENABLE_MODULE_ECDH=OFF -DSECP256K1_BUILD_EXAMPLES=OFF -DSECP256K1_BUILD_TESTS=OFF
+      - name: Configure secp256k1 (MinGW)
+        run: cmake -B vendor/secp256k1/build -S vendor/secp256k1 -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCMAKE_C_COMPILER=gcc -DSECP256K1_ENABLE_BENCHMARK=OFF -DSECP256K1_ENABLE_TESTS=OFF -DSECP256K1_ENABLE_MODULE_SCHNORRSIG=ON -DSECP256K1_ENABLE_MODULE_ECDH=OFF -DSECP256K1_BUILD_EXAMPLES=OFF -DSECP256K1_BUILD_TESTS=OFF
       - name: Build secp256k1
         run: cmake --build vendor/secp256k1/build --config Release
       - name: Build p99lfg.exe
