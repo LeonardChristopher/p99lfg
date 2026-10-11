@@ -2,9 +2,9 @@ import Foundation
 
 /// Wraps the portable p99lfg C core (core.c/nostr.c/sync.c/ws_client.c) for SwiftUI.
 ///
-/// All LfgState/SyncState access funnels through `stateQueue` (serial) because
-/// the C core is single-threaded state and the sync thread mutates it from
-/// its callback while the main thread reads entries.
+/// All LfgState/SyncState access funnels through serial queues because the C
+/// core is single-threaded state and the sync thread mutates it from its
+/// callbacks while the main thread reads entries.
 final class LfgModel: ObservableObject {
     static let shared = LfgModel()
 
@@ -39,15 +39,15 @@ final class LfgModel: ObservableObject {
         let at: Date
     }
 
-    private var state: OpaquePointer?
+    private var state: OpaquePointer?                       /* LfgState*   */
+    private var favList: OpaquePointer?                    /* FavList*    */
+    private var ratingStore: UnsafeMutablePointer<RatingStore>?
     private var syncState: UnsafeMutablePointer<SyncState>?
-    private var favList: OpaquePointer?
-    private var ratingStore: OpaquePointer?
-    private var genericWrapper: GenericCallbackWrapper?
     private var syncThread: Thread?
     private var running = false
     private var wrapper: CallbackWrapper?
     private var dmWrapper: DmCallbackWrapper?
+    private var genericWrapper: GenericCallbackWrapper?
 
     private static let relays = ["wss://nos.lol", "wss://relay.damus.io"]
 
@@ -56,25 +56,16 @@ final class LfgModel: ObservableObject {
     private let publishQueue = DispatchQueue(label: "p99lfg.publish")
 
     private var keyPath: String {
-        let dir = NSHomeDirectory() + "/Documents"
-        return dir + "/p99lfg.key"
+        NSHomeDirectory() + "/Documents/p99lfg.key"
     }
 
     private var favPath: String {
-        let dir = NSHomeDirectory() + "/Documents"
-        return dir + "/p99lfg_favourites.txt"
+        NSHomeDirectory() + "/Documents/p99lfg_favourites.txt"
     }
 
     private final class CallbackWrapper {
         let callback: SyncOnEvent
         init(_ cb: @escaping @convention(c) (UnsafePointer<SyncRemoteEntry>?, UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void) {
-            callback = cb
-        }
-    }
-
-    private final class GenericCallbackWrapper {
-        let callback: @convention(c) (Int32, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UInt64, UnsafeMutableRawPointer?) -> Void
-        init(_ cb: @escaping @convention(c) (Int32, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UInt64, UnsafeMutableRawPointer?) -> Void) {
             callback = cb
         }
     }
@@ -86,9 +77,14 @@ final class LfgModel: ObservableObject {
         }
     }
 
-    init() {
-        let keyPath = self.keyPath
+    private final class GenericCallbackWrapper {
+        let callback: @convention(c) (Int32, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UInt64, UnsafeMutableRawPointer?) -> Void
+        init(_ cb: @escaping @convention(c) (Int32, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UInt64, UnsafeMutableRawPointer?) -> Void) {
+            callback = cb
+        }
+    }
 
+    init() {
         state = lfg_new()
         lfg_set_stale_minutes(state, 30)
         favList = fav_load(favPath)
@@ -123,14 +119,11 @@ final class LfgModel: ObservableObject {
             guard let sender, let content, let userdata else { return }
             let model = Unmanaged<LfgModel>.fromOpaque(userdata).takeUnretainedValue()
             model.handleIncomingDm(sender: String(cString: sender),
-                                    content: String(cString: content))
+                                  content: String(cString: content))
         }
 
-        sync_init(syncState, keyPath, "green", wrapper!.callback,
-                  Unmanaged.passUnretained(self).toOpaque())
-        sync_set_dm_callback(syncState, dmWrapper!.callback,
-                             Unmanaged.passUnretained(self).toOpaque())
-        ratingStore = rating_store_new()
+        let rs = rating_store_new()
+        ratingStore = rs
         genericWrapper = GenericCallbackWrapper { kind, pubkey, dtag, content, createdAt, userdata in
             guard let pubkey, let dtag, let content, let userdata else { return }
             let model = Unmanaged<LfgModel>.fromOpaque(userdata).takeUnretainedValue()
@@ -138,16 +131,23 @@ final class LfgModel: ObservableObject {
                 if kind == 30079 {
                     _ = rating_record(model.ratingStore, pubkey, dtag, content, createdAt)
                 } else if kind == 30080 {
-                    let agree = content.contains("\"agree\":true")
-                    _ = vote_record(model.ratingStore, pubkey, dtag, agree ? 1 : 0, createdAt)
+                    let agree = content.contains("\"agree\":true") ? 1 : 0
+                    _ = vote_record(model.ratingStore, pubkey, dtag, agree, createdAt)
                 }
             }
             DispatchQueue.main.async { model.refreshRatings() }
         }
-        sync_set_generic_callback(syncState, genericWrapper!.callback,
-                                   Unmanaged.passUnretained(self).toOpaque())
+
+        keyPath.withCString { kp in
+            sync_init(ss, kp, "green", wrapper!.callback,
+                      Unmanaged.passUnretained(self).toOpaque())
+        }
+        sync_set_dm_callback(ss, dmWrapper!.callback,
+                             Unmanaged.passUnretained(self).toOpaque())
+        sync_set_generic_callback(ss, genericWrapper!.callback,
+                                  Unmanaged.passUnretained(self).toOpaque())
         for r in Self.relays {
-            r.withCString { sync_add_relay(syncState, $0) }
+            r.withCString { sync_add_relay(ss, $0) }
         }
         refreshFavourites()
         refresh()
@@ -178,15 +178,17 @@ final class LfgModel: ObservableObject {
             guard let self else { return }
             while self.running {
                 autoreleasepool {
+                    guard let sp = self.syncState else { return }
                     self.syncQueue.sync {
-                        sync_poll(self.syncState)
+                        sync_poll(sp)
                     }
                     var status = ""
                     self.syncQueue.sync {
-                        if let sp = self.syncState {
-                            for i in 0..<Int(sp.pointee.nrelays) where sp.pointee.relays[i].enabled != 0 {
-                                let url = String(cString: sp.pointee.relays[i].url)
-                                status += url + (sp.pointee.relays[i].connected != 0 ? " ✓" : " ✗") + "\n"
+                        let n = sync_relay_count(sp)
+                        for i in 0..<n {
+                            if let urlc = sync_relay_url(sp, i) {
+                                let url = String(cString: urlc)
+                                status += url + (sync_relay_connected(sp, i) != 0 ? " ✓" : " ✗") + "\n"
                             }
                         }
                     }
@@ -208,6 +210,13 @@ final class LfgModel: ObservableObject {
         running = false
     }
 
+    func setServer(_ server: String) {
+        guard let sp = syncState else { return }
+        syncQueue.sync {
+            server.withCString { sync_set_server(sp, $0) }
+        }
+    }
+
     func refresh() {
         guard let state else { return }
         var out: [Entry] = []
@@ -226,6 +235,72 @@ final class LfgModel: ObservableObject {
             }
         }
         entries = out
+    }
+
+    /// Import the Windows app's Nostr key so both devices share one identity.
+    func importKey(hex: String) -> String? {
+        let hexOnly = hex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        var pubkey = [CChar](repeating: 0, count: 65)
+        let ok = hexOnly.withCString { cstr -> Int32 in
+            nostr_import_key(keyPath, cstr, &pubkey)
+        }
+        guard ok == 0, let sp = syncState else { return nil }
+        syncQueue.sync {
+            keyPath.withCString { kp in
+                _ = sync_reload_key(sp, kp)
+            }
+        }
+        let pub = String(cString: pubkey)
+        DispatchQueue.main.async { self.myPubkey = pub }
+        return pub
+    }
+
+    func exportKeyHex() -> String? {
+        guard let secret = try? String(contentsOfFile: keyPath, encoding: .ascii) else {
+            return nil
+        }
+        return secret.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func markLfg(name: String, zone: String, detail: String) {
+        guard let state, let sp = syncState else { return }
+        stateQueue.sync {
+            name.withCString { n in
+                zone.withCString { z in
+                    detail.withCString { d in
+                        lfg_add_manual(state, n, z, d)
+                    }
+                }
+            }
+        }
+        refresh()
+        publishQueue.async {
+            var content = [CChar](repeating: 0, count: 512)
+            name.withCString { n in
+                zone.withCString { z in
+                    detail.withCString { d in
+                        _ = sync_build_content(&content, content.count, n, z, d, 1)
+                        _ = self.syncQueue.sync { sync_publish(sp, &content) }
+                    }
+                }
+            }
+        }
+    }
+
+    func remove(name: String) {
+        guard let state else { return }
+        stateQueue.sync {
+            _ = name.withCString { lfg_remove(state, $0) }
+        }
+        refresh()
+        guard let sp = syncState else { return }
+        publishQueue.async {
+            var content = [CChar](repeating: 0, count: 512)
+            name.withCString { n in
+                _ = sync_build_content(&content, content.count, n, "", "", 0)
+                _ = self.syncQueue.sync { sync_publish(sp, &content) }
+            }
+        }
     }
 
     // MARK: - Favourites
@@ -251,7 +326,7 @@ final class LfgModel: ObservableObject {
     func toggleFavourite(_ name: String) {
         guard let favList else { return }
         stateQueue.sync {
-            _ = fav_toggle(favList, name)
+            _ = name.withCString { fav_toggle(favList, $0) }
         }
         refreshFavourites()
     }
@@ -289,8 +364,6 @@ final class LfgModel: ObservableObject {
         }
     }
 
-    /// Agree/disagree with a rating some rater published about us.
-    /// The rating id is looked up from the local store.
     func vote(raterName: String, aboutName: String, agree: Bool) {
         guard let raterPub = pubkeyFor(raterName),
               let aboutPub = pubkeyFor(aboutName),
@@ -330,7 +403,6 @@ final class LfgModel: ObservableObject {
         }
     }
 
-    /// Map of character name -> nostr pubkey from recent LFG events.
     private var nameToPubkey: [String: String] = [:]
 
     func recordPubkey(name: String, pubkey: String) {
@@ -346,13 +418,15 @@ final class LfgModel: ObservableObject {
         var plain = [CChar](repeating: 0, count: 600)
         sender.withCString { sptr in
             content.withCString { cptr in
-                _ = chat_try_decrypt(sp.pointee.privkey, sptr, cptr,
-                                     &plain, plain.count)
+                sp.pointee.privkey.withCString { _ in
+                    _ = chat_try_decrypt(sp.pointee.privkey, sptr, cptr,
+                                         &plain, plain.count)
+                }
             }
         }
         let text = String(cString: plain)
         guard !text.isEmpty else { return }
-        let name = nameToPubkey.first(where: { $0.value == sender })?.key ?? sender.prefix(8) + "…"
+        let name = nameToPubkey.first(where: { $0.value == sender })?.key ?? String(sender.prefix(8)) + "…"
         DispatchQueue.main.async {
             self.appendMessage(name: name, text: text, fromMe: false)
         }

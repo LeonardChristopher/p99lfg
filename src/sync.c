@@ -83,6 +83,42 @@ int sync_reload_key(SyncState *s, const char *keyfile_path)
     return 0;
 }
 
+void sync_set_dm_callback(SyncState *s, SyncOnDm cb, void *userdata)
+{
+    s->on_dm = cb;
+    s->dm_userdata = userdata;
+}
+
+void sync_set_generic_callback(SyncState *s, SyncOnGeneric cb, void *userdata)
+{
+    s->on_generic = cb;
+    s->generic_userdata = userdata;
+}
+
+int sync_relay_count(SyncState *s)
+{
+    return s->nrelays;
+}
+
+const char *sync_relay_url(SyncState *s, int i)
+{
+    if (i < 0 || i >= s->nrelays)
+        return NULL;
+    return s->relays[i].url;
+}
+
+int sync_relay_connected(SyncState *s, int i)
+{
+    if (i < 0 || i >= s->nrelays)
+        return 0;
+    return s->relays[i].connected;
+}
+
+void sync_set_server(SyncState *s, const char *server)
+{
+    snprintf(s->server, sizeof(s->server), "%s", server ? server : "green");
+}
+
 void sync_add_relay(SyncState *s, const char *url)
 {
     if (s->nrelays >= SYNC_MAX_RELAYS)
