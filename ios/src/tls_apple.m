@@ -81,8 +81,7 @@ static void pump_receive(TlsCtx *t)
                 memcpy(t->buf + t->buflen, p, n);
                 t->buflen += n;
             }
-            if (mapped)
-                nw_release(mapped);
+            (void)mapped;
         } else if (is_complete) {
             t->eof = 1;
         }
@@ -105,22 +104,18 @@ static int tls_connect_impl(const char *host, void *sockp, TlsCtx **out)
     if (!ep)
         goto fail;
 
-    nw_parameters_t params = nw_parameters_create_secure_tcp(
-        NW_PARAMETERS_DEFAULT_PROTOCOL, NW_PARAMETERS_DEFAULT_CONFIGURATION);
-    if (!params) {
-        nw_release(ep);
+    nw_parameters_t params = nw_parameters_create_secure_tcp(NULL, NULL);
+    if (!params)
         goto fail;
-    }
-    /* enforce hostname validation (default policy already does) */
+    /* TLS with default trust policy (validates hostname) */
     t->conn = nw_connection_create(ep, params);
-    nw_release(ep);
-    nw_release(params);
     if (!t->conn)
         goto fail;
 
-    nw_connection_set_state_changed_handler(t->conn, ^(nw_connection_state_t state, NSError *error) {
-        on_state_change(t->conn, state, t);
-    });
+    nw_connection_set_state_changed_handler(t->conn,
+        ^(nw_connection_state_t state, nw_error_t error) {
+            on_state_change(t->conn, state, t);
+        });
     nw_connection_set_queue(t->conn, t->queue);
     nw_connection_start(t->conn);
 
@@ -131,13 +126,8 @@ static int tls_connect_impl(const char *host, void *sockp, TlsCtx **out)
     *out = t;
     return 0;
 fail:
-    if (t->conn) {
+    if (t->conn)
         nw_connection_cancel(t->conn);
-        nw_release(t->conn);
-    }
-    if (t->queue)
-        dispatch_release(t->queue);
-    dispatch_release(t->sem);
     free(t);
     return -1;
 }
@@ -149,11 +139,10 @@ static int tls_send_impl(TlsCtx *t, const void *data, unsigned int len)
         return -1;
     __block int ok = 0;
     nw_connection_send(t->conn, d, NW_CONNECTION_DEFAULT_MESSAGE_CONTEXT, true,
-                       ^(NSError *error) {
+                       ^(nw_error_t error) {
         ok = error ? -1 : 0;
         dispatch_semaphore_signal(t->sem);
     });
-    dispatch_release(d);
     long r = dispatch_semaphore_wait(t->sem, dispatch_time(DISPATCH_TIME_NOW, 15ULL * NSEC_PER_SEC));
     if (r != 0)
         return -1;
@@ -195,13 +184,8 @@ static int tls_recv_impl(TlsCtx *t, void *data, unsigned int len)
 static void tls_close_impl(TlsCtx *t)
 {
     if (t) {
-        if (t->conn) {
+        if (t->conn)
             nw_connection_cancel(t->conn);
-            nw_release(t->conn);
-        }
-        if (t->queue)
-            dispatch_release(t->queue);
-        dispatch_release(t->sem);
         free(t);
     }
 }
