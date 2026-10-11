@@ -59,6 +59,11 @@ static void log_printf(const char *fmt, ...)
     fflush(g_log);
 }
 
+static void log_line(const char *msg)
+{
+    log_printf("%s\n", msg);
+}
+
 static LONG WINAPI crash_handler(EXCEPTION_POINTERS *ep)
 {
     if (g_log) {
@@ -340,7 +345,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     log_open();
     log_printf("p99lfg starting\n");
     SetUnhandledExceptionFilter(crash_handler);
-    lfg_set_debug(log_printf);
+    lfg_set_debug(log_line);
     InitCommonControls();
     g_state = lfg_new();
     char dir[LFG_PATH_MAX];
