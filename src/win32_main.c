@@ -362,6 +362,24 @@ typedef struct {
 static RateDlgState g_rate;
 static char g_rate_target[NOSTR_PUBKEY_HEX];
 
+static LRESULT CALLBACK rate_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == WM_COMMAND && (LOWORD(wp) == ID_RATE_OK || LOWORD(wp) == ID_RATE_CANCEL)) {
+        if (LOWORD(wp) == ID_RATE_OK) {
+            char cbuf[8], fbuf[8], lbuf[8];
+            GetWindowTextA(g_rate.competent, cbuf, sizeof(cbuf));
+            GetWindowTextA(g_rate.friendly, fbuf, sizeof(fbuf));
+            GetWindowTextA(g_rate.listens, lbuf, sizeof(lbuf));
+            int comp = atoi(cbuf), fri = atoi(fbuf), lis = atoi(lbuf);
+            if (comp >= 1 && comp <= 5 && fri >= 1 && fri <= 5 && lis >= 1 && lis <= 5 &&
+                g_rate_target[0])
+                rating_publish(&g_sync, g_rate_target, comp, fri, lis);
+        }
+        DestroyWindow(dlg);
+        return 0;
+    }
+    return DefWindowProcA(dlg, msg, wp, lp);
+}
 
 static void on_rate(void)
 {
@@ -427,7 +445,7 @@ static void chat_refresh(void)
 static LRESULT CALLBACK chat_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
     if (msg == WM_COMMAND && LOWORD(wp) == ID_CHAT_SEND && lp) {
-        if (((HWND)lp) == GetDlgItemA(dlg, ID_CHAT_SEND)) {
+        if (((HWND)lp) == GetDlgItem(dlg, ID_CHAT_SEND)) {
             char m[512];
             GetWindowTextA(g_chat_input, m, sizeof(m));
             if (m[0] && g_chat_with[0]) {
@@ -500,7 +518,7 @@ static void on_show_qr(void)
     }
     uint8_t qr[qrcodegen_BUFFER_LEN_MAX];
     uint8_t tmp[qrcodegen_BUFFER_LEN_MAX];
-    if (!qrcodegen_encode_text(g_sync.privkey, tmp, qr, qrcodegen_Ecc_MEDIUM,
+    if (!qrcodegen_encodeText(g_sync.privkey, tmp, qr, qrcodegen_Ecc_MEDIUM,
                                qrcodegen_VERSION_MIN, qrcodegen_VERSION_MAX,
                                qrcodegen_Mask_AUTO, true)) {
         MessageBoxA(g_hwnd, "Could not encode key as QR.", "p99lfg", MB_ICONINFORMATION);
