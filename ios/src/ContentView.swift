@@ -1,10 +1,16 @@
 import SwiftUI
 
+struct RateTarget: Identifiable {
+    let name: String
+    var id: String { name }
+}
+
 struct ContentView: View {
     @ObservedObject private var model = LfgModel.shared
 
     @State private var showAdd = false
     @State private var showKey = false
+    @State private var rateTarget: RateTarget?
     @State private var server = "green"
 
     var body: some View {
@@ -82,6 +88,11 @@ struct ContentView: View {
             .sheet(isPresented: $showKey) {
                 KeyView()
             }
+            .sheet(item: $rateTarget) { target in
+                RateView(name: target.name) { c, f, l in
+                    model.rate(name: target.name, competent: c, friendly: f, listens: l)
+                }
+            }
             .onAppear { model.start() }
             .onChange(of: server) { newValue in
                 model.setServer(newValue)
@@ -115,6 +126,7 @@ struct ContentView: View {
                     .foregroundColor(.secondary)
             }
             Spacer()
+            RatingBadge(summary: model.ratingSummaries[e.name])
             NavigationLink {
                 ChatView(name: e.name)
             } label: {
@@ -129,6 +141,12 @@ struct ContentView: View {
             } label: {
                 Label("Remove", systemImage: "person.badge.minus")
             }
+            Button {
+                rateTarget = RateTarget(name: e.name)
+            } label: {
+                Label("Rate", systemImage: "star.square")
+            }
+            .tint(.orange)
         }
     }
 

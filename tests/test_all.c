@@ -6,6 +6,7 @@
 #include "aes.h"
 #include "chat.h"
 #include "fav.h"
+#include "rating.h"
 #include "qrcodegen.h"
 
 #include <stdio.h>
@@ -266,6 +267,79 @@ static void test_chat_roundtrip(void)
 
 
 
+/* Ratings: record, dedupe, aggregate, and the consensus anti-brigade rule. */
+static void test_ratings(void)
+{
+    RatingStore *rs = rating_store_new();
+
+    /* three distinct raters rate the same target pubkey */
+    const char *target =
+        "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9";
+    char rater[3][65];
+    for (int i = 0; i < 3; i++) {
+        char path[64];
+        snprintf(path, sizeof(path), "/tmp/p99lfg_rate_r%d.key", i);
+        remove(path);
+        nostr_identity_load(path, rater[i]);
+        remove(path);
+    }
+
+    CHECK(rating_record(rs, rater[0], target,
+          "{\"competent\":5,\"friendly\":5,\"listens\":5}", 1000) == 1, "rating record 1");
+    CHECK(rating_record(rs, rater[1], target,
+          "{\"competent\":4,\"friendly\":4,\"listens\":4}", 1001) == 1, "rating record 2");
+    /* replaceable: same rater re-rates -> overwrite not duplicate */
+    CHECK(rating_record(rs, rater[0], target,
+          "{\"competent\":3,\"friendly\":3,\"listens\":3}", 2000) == 1, "rating re-rate");
+    CHECK(rs->count == 2, "ratings deduped per rater/target");
+
+    int c, f, l, n;
+    CHECK(rating_summary(rs, target, &c, &f, &l, &n) == 0, "summary computed");
+    CHECK(n == 2, "summary counts visible ratings");
+    CHECK(c == 3 || c == 4, "summary average in range");
+
+    /* make rater[2] active by having them rate a different target */
+    const char *other =
+        "eff69ef2b1bd93a66ed7ef4709410101b1d0cba4c853a3ca3c8ad332f4f8f3b2";
+    CHECK(rating_record(rs, rater[2], other,
+          "{\"competent\":4,\"friendly\":4,\"listens\":4}", 1500) == 1,
+          "rating record 3 (activates rater 2)");
+
+    /* consensus: two active raters disagree with rater[1]'s rating -> hidden */
+    rating_store_finalize(rs);
+    const Rating *r1 = NULL;
+    for (int i = 0; i < rs->count; i++)
+        if (strcmp(rs->ratings[i].rater, rater[1]) == 0 &&
+            strcmp(rs->ratings[i].target, target) == 0)
+            r1 = &rs->ratings[i];
+    CHECK(r1 != NULL, "rater found");
+
+    CHECK(vote_record(rs, rater[0], r1->id, 0, 3000) == 1, "disagree vote 1");
+    CHECK(vote_record(rs, rater[2], r1->id, 0, 3001) == 1, "disagree vote 2");
+    rating_store_finalize(rs);
+    CHECK(rating_is_hidden(rs, r1) == 1, "brigaded rating hidden by consensus");
+
+    /* hidden rating drops out of the summary */
+    CHECK(rating_summary(rs, target, &c, &f, &l, &n) == 0, "summary after hiding");
+    CHECK(n == 1, "hidden rating excluded from summary");
+
+    /* fresh keys that never rated anyone cannot brigade */
+    RatingStore *rs2 = rating_store_new();
+    CHECK(rating_record(rs2, rater[0], target,
+          "{\"competent\":5,\"friendly\":5,\"listens\":5}", 1000) == 1, "fresh store rating");
+    rating_store_finalize(rs2);
+    const Rating *fr = &rs2->ratings[0];
+    char anon1[65] = "1111111111111111111111111111111111111111111111111111111111111111";
+    char anon2[65] = "2222222222222222222222222222222222222222222222222222222222222222";
+    vote_record(rs2, anon1, fr->id, 0, 3000);
+    vote_record(rs2, anon2, fr->id, 0, 3001);
+    rating_store_finalize(rs2);
+    CHECK(rating_is_hidden(rs2, fr) == 0, "inactive keys cannot brigade");
+
+    rating_store_free(rs);
+    rating_store_free(rs2);
+}
+
 /* QR payload encodes a 64-hex key (Windows shows it, phones scan it). */
 static void test_qr_key(void)
 {
@@ -315,6 +389,7 @@ int main(void)
     test_favourites();
     test_qr_key();
     test_chat_roundtrip();
+    test_ratings();
     printf("\n%s (%d failures)\n", fails ? "TESTS FAILED" : "ALL TESTS PASSED", fails);
     return fails ? 1 : 0;
 }

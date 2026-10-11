@@ -15,6 +15,10 @@
  * Subscribe: REQ filter kinds [30078], #t [p99lfg].
  */
 
+/* Callback for non-LFG, non-DM event kinds (ratings, votes): kind, pubkey,
+ * d tag, content, created_at. */
+typedef void (*SyncOnGeneric)(int kind, const char *pubkey, const char *dtag,
+                               const char *content, uint64_t created_at, void *userdata);
 typedef struct {
     char url[192];
     int enabled;
@@ -42,8 +46,10 @@ typedef struct {
     char server[32];
     SyncOnEvent on_event;
     SyncOnDm on_dm;
+    SyncOnGeneric on_generic;
     void *userdata;
     void *dm_userdata;
+    void *generic_userdata;
 } SyncState;
 
 void sync_init(SyncState *s, const char *keyfile_path, const char *server,
@@ -67,7 +73,13 @@ void sync_poll(SyncState *s);
  * if an EVENT was parsed and cb fired, 0 if not, -1 on malformed input. */
 int sync_handle_message(SyncState *s, const char *msg);
 
+/* Send a raw ["EVENT",...] message to all enabled relays. Returns 0 if at
+ * least one accepted it. */
+int sync_send_event(SyncState *s, const char *msg);
+
+
 /* Set the DM callback (may be NULL). */
 #define sync_set_dm_callback(s, cb, ud) do { (s)->on_dm = (cb); (s)->dm_userdata = (ud); } while (0)
+#define sync_set_generic_callback(s, cb, ud) do { (s)->on_generic = (cb); (s)->generic_userdata = (ud); } while (0)
 
 #endif

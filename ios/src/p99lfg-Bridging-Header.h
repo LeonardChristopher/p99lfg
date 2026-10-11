@@ -8,5 +8,6 @@
 #include "aes.h"
 #include "chat.h"
 #include "fav.h"
+#include "rating.h"
 
 #endif

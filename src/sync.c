@@ -2,6 +2,7 @@
 #include "ws_client.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -99,6 +100,28 @@ size_t sync_build_content(char *out, size_t outsz, const char *name,
         name, zone, detail, lfg ? "true" : "false");
 }
 
+/* Send a raw ["EVENT",...] message to all enabled relays. Returns 0 if at
+ * least one accepted it. */
+int sync_send_event(SyncState *s, const char *msg)
+{
+    int ok = 0;
+    for (int i = 0; i < s->nrelays; i++) {
+        if (!s->relays[i].enabled)
+            continue;
+        WsUrl u;
+        if (ws_parse_url(s->relays[i].url, &u) != 0)
+            continue;
+        WsConn c;
+        if (ws_connect(&c, &u) != 0)
+            continue;
+        s->relays[i].connected = 1;
+        if (ws_send_text(&c, msg) == 0)
+            ok++;
+        ws_close(&c);
+    }
+    return ok > 0 ? 0 : -1;
+}
+
 int sync_publish(SyncState *s, const char *content_json)
 {
     NostrEvent ev = {0};
@@ -159,6 +182,42 @@ int sync_handle_message(SyncState *s, const char *msg)
                 if (json_get_string(evobj, "content", content, sizeof(content)) >= 0 &&
                     json_get_string(evobj, "pubkey", sender, sizeof(sender)) >= 0) {
                     s->on_dm(sender, content, s->dm_userdata);
+                    return 1;
+                }
+            }
+            /* kinds 30079 (rating) / 30080 (vote): generic callback */
+            if ((strcmp(kindstr, "30079") == 0 || strcmp(kindstr, "30080") == 0)
+                && s->on_generic) {
+                char content[600], pubkey[80], dtag[140];
+                uint64_t created = 0;
+                if (json_get_string(evobj, "content", content, sizeof(content)) >= 0 &&
+                    json_get_string(evobj, "pubkey", pubkey, sizeof(pubkey)) >= 0) {
+                    if (json_get_string(evobj, "d", dtag, sizeof(dtag)) < 0) {
+                        /* d tag sits inside tags array; find "d" entry */
+                        const char *tp = strstr(evobj, "[\"d\",\"");
+                        if (tp) {
+                            tp += 6;
+                            size_t di = 0;
+                            while (*tp && *tp != '"' && di < sizeof(dtag) - 1)
+                                dtag[di++] = *tp++;
+                            dtag[di] = '\0';
+                        } else {
+                            dtag[0] = '\0';
+                        }
+                    }
+                    {
+                        char nums[24] = {0};
+                        const char *cp = strstr(evobj, "\"created_at\":");
+                        if (cp) {
+                            cp += 14;
+                            size_t ni = 0;
+                            while (*cp >= '0' && *cp <= '9' && ni < sizeof(nums) - 1)
+                                nums[ni++] = *cp++;
+                            created = strtoull(nums, NULL, 10);
+                        }
+                    }
+                    s->on_generic(atoi(kindstr), pubkey, dtag, content, created,
+                                  s->generic_userdata);
                     return 1;
                 }
             }

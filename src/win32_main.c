@@ -5,6 +5,7 @@
 #include "sync.h"
 #include "chat.h"
 #include "fav.h"
+#include "rating.h"
 #include "win32_qr.h"
 
 #include <windows.h>
@@ -34,6 +35,7 @@
 #define ID_BTN_KEY_QR 112
 #define ID_BTN_FAV 113
 #define ID_BTN_CHAT 114
+#define ID_BTN_RATE 115
 
 static LfgState *g_state;
 static HWND g_hwnd, g_list, g_ed_name, g_ed_zone, g_st_dir;
@@ -88,6 +90,7 @@ static const char *DEFAULT_RELAYS[] = {
 };
 
 static FavList *g_favs;
+static RatingStore *g_ratings;
 /* name -> pubkey of recently seen LFG players, for chat addressing */
 #define NAME_PUB_MAX 256
 static char g_np_names[NAME_PUB_MAX][LFG_NAME_MAX];
@@ -285,11 +288,21 @@ static void populate_list(void)
     for (int i = 0; i < lfg_count(g_state); i++) {
         const LfgEntry *e = lfg_get(g_state, i);
         char row[256];
-        snprintf(row, sizeof(row), "%s%s  [%s]  %s%s",
+        char rat[64] = "";
+        if (g_ratings) {
+            const char *pub = name_pub_lookup(e->name);
+            if (pub) {
+                int c, f, l, n;
+                if (rating_summary(g_ratings, pub, &c, &f, &l, &n) == 0)
+                    snprintf(rat, sizeof(rat), "  [%dC/%dF/%dL x%d]", c, f, l, n);
+            }
+        }
+        snprintf(row, sizeof(row), "%s%s  [%s]  %s%s%s",
                  (g_favs && fav_has(g_favs, e->name)) ? "* " : "",
                  e->name,
                  e->detail[0] ? e->detail : "?",
                  e->zone[0] ? e->zone : "-",
+                 rat,
                  e->source == LFG_SRC_MANUAL ? "  (manual)" : "");
         SendMessageA(g_list, LB_ADDSTRING, 0, (LPARAM)row);
     }
@@ -495,6 +508,144 @@ static void on_chat_selected(void)
     open_chat(e->name);
 }
 
+
+/* kinds 30079/30080 arriving from the relay poll */
+static void on_generic_event(int kind, const char *pubkey, const char *dtag,
+                             const char *content, uint64_t created_at, void *ud)
+{
+    (void)ud;
+    if (!g_ratings)
+        return;
+    if (kind == 30079) {
+        if (rating_record(g_ratings, pubkey, dtag, content, created_at))
+            rating_store_finalize(g_ratings);
+    } else if (kind == 30080) {
+        int agree = strstr(content, "\"agree\":true") != NULL;
+        if (vote_record(g_ratings, pubkey, dtag, agree, created_at))
+            rating_store_finalize(g_ratings);
+    }
+    if (g_hwnd)
+        PostMessageA(g_hwnd, WM_REMOTE, 0, 0);
+}
+
+/* ---- rate dialog ---- */
+static HWND g_rate_dlg, g_rate_c1, g_rate_c2, g_rate_c3, g_rate_target_lbl;
+static char g_rate_target_pub[NOSTR_PUBKEY_HEX];
+#define ID_RATE_C1 300
+#define ID_RATE_C2 301
+#define ID_RATE_C3 302
+#define ID_RATE_OK 303
+#define ID_RATE_CANCEL 304
+
+static void add_combo_items(HWND combo)
+{
+    for (int i = 1; i <= 5; i++) {
+        char item[8];
+        snprintf(item, sizeof(item), "%d", i);
+        int idx = (int)SendMessageA(combo, CB_ADDSTRING, 0, (LPARAM)item);
+        SendMessageA(combo, CB_SETITEMDATA, idx, i);
+    }
+    SendMessageA(combo, CB_SETCURSEL, 2, 0); /* default 3 */
+}
+
+static LRESULT CALLBACK RateDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_CREATE: {
+        CREATESTRUCTA *cs = (CREATESTRUCTA *)lp;
+        HFONT hf = (HFONT)cs->lpCreateParams;
+        g_rate_target_lbl = CreateWindowA("STATIC", "Rating:", WS_CHILD | WS_VISIBLE,
+                                          10, 10, 260, 18, hwnd, NULL, NULL, NULL);
+        CreateWindowA("STATIC", "Competent", WS_CHILD | WS_VISIBLE,
+                      10, 40, 70, 18, hwnd, NULL, NULL, NULL);
+        g_rate_c1 = CreateWindowA("COMBOBOX", NULL,
+                                 WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+                                 90, 38, 60, 120, hwnd, (HMENU)ID_RATE_C1, NULL, NULL);
+        CreateWindowA("STATIC", "Friendly", WS_CHILD | WS_VISIBLE,
+                      10, 70, 70, 18, hwnd, NULL, NULL, NULL);
+        g_rate_c2 = CreateWindowA("COMBOBOX", NULL,
+                                 WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+                                 90, 68, 60, 120, hwnd, (HMENU)ID_RATE_C2, NULL, NULL);
+        CreateWindowA("STATIC", "Listens", WS_CHILD | WS_VISIBLE,
+                      10, 100, 70, 18, hwnd, NULL, NULL, NULL);
+        g_rate_c3 = CreateWindowA("COMBOBOX", NULL,
+                                 WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+                                 90, 98, 60, 120, hwnd, (HMENU)ID_RATE_C3, NULL, NULL);
+        CreateWindowA("BUTTON", "Publish",
+                      WS_CHILD | WS_VISIBLE, 90, 130, 70, 24, hwnd, (HMENU)ID_RATE_OK, NULL, NULL);
+        CreateWindowA("BUTTON", "Cancel",
+                      WS_CHILD | WS_VISIBLE, 170, 130, 70, 24, hwnd, (HMENU)ID_RATE_CANCEL, NULL, NULL);
+        add_combo_items(g_rate_c1);
+        add_combo_items(g_rate_c2);
+        add_combo_items(g_rate_c3);
+        HWND ctrl = GetWindow(hwnd, GW_CHILD);
+        while (ctrl) {
+            SendMessageA(ctrl, WM_SETFONT, (WPARAM)hf, TRUE);
+            ctrl = GetWindow(ctrl, GW_HWNDNEXT);
+        }
+        return 0;
+    }
+    case WM_COMMAND:
+        switch (LOWORD(wp)) {
+        case ID_RATE_OK: {
+            int c = (int)SendMessageA(g_rate_c1, CB_GETCURSEL, 0, 0) + 1;
+            int f = (int)SendMessageA(g_rate_c2, CB_GETCURSEL, 0, 0) + 1;
+            int l = (int)SendMessageA(g_rate_c3, CB_GETCURSEL, 0, 0) + 1;
+            if (rating_publish(&g_sync, g_rate_target_pub, c, f, l) != 0)
+                MessageBoxA(hwnd, "Publishing failed (check relays).", "p99lfg",
+                             MB_OK | MB_ICONERROR);
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        case ID_RATE_CANCEL:
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        break;
+    case WM_DESTROY:
+        g_rate_dlg = NULL;
+        return 0;
+    }
+    return DefWindowProcA(hwnd, msg, wp, lp);
+}
+
+static void on_rate_selected(HWND hwnd)
+{
+    LRESULT sel = SendMessageA(g_list, LB_GETCURSEL, 0, 0);
+    if (sel == LB_ERR)
+        return;
+    const LfgEntry *e = lfg_get(g_state, (int)sel);
+    if (!e)
+        return;
+    const char *pub = name_pub_lookup(e->name);
+    if (!pub) {
+        MessageBoxA(hwnd, "No pubkey known for this player yet.",
+                    "p99lfg", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    snprintf(g_rate_target_pub, sizeof(g_rate_target_pub), "%s", pub);
+    if (g_rate_dlg) {
+        SetWindowTextA(g_rate_dlg, "Rate player");
+        ShowWindow(g_rate_dlg, SW_SHOW);
+        return;
+    }
+    WNDCLASSA wc = {0};
+    wc.lpfnWndProc = RateDlgProc;
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = "p99lfg_rate";
+    RegisterClassA(&wc);
+    HFONT hf = CreateFontA(-12, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+                           ANSI_CHARSET, 0, 0, CLEARTYPE_QUALITY,
+                           DEFAULT_PITCH | FF_DONTCARE, "Tahoma");
+    g_rate_dlg = CreateWindowExA(0, "p99lfg_rate", "Rate player",
+                                 WS_OVERLAPPEDWINDOW & ~(WS_THICKFRAME | WS_MAXIMIZEBOX),
+                                 CW_USEDEFAULT, CW_USEDEFAULT, 270, 200,
+                                 hwnd, NULL, wc.hInstance, hf);
+    ShowWindow(g_rate_dlg, SW_SHOW);
+}
+
 static void on_pick_dir(HWND hwnd)
 {
     char dir[LFG_PATH_MAX];
@@ -551,6 +702,8 @@ static void create_controls(HWND hwnd, HFONT hf)
                   WS_CHILD | WS_VISIBLE, 270, 370, 80, 24, hwnd, (HMENU)ID_BTN_FAV, NULL, NULL);
     CreateWindowA("BUTTON", "Chat",
                   WS_CHILD | WS_VISIBLE, 355, 370, 60, 24, hwnd, (HMENU)ID_BTN_CHAT, NULL, NULL);
+    CreateWindowA("BUTTON", "Rate",
+                  WS_CHILD | WS_VISIBLE, 420, 370, 50, 24, hwnd, (HMENU)ID_BTN_RATE, NULL, NULL);
 
     HWND ctrl = GetWindow(hwnd, GW_CHILD);
     while (ctrl) {
@@ -587,6 +740,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case ID_BTN_KEY_QR: on_key_qr(hwnd); return 0;
         case ID_BTN_FAV: on_favourite(); return 0;
         case ID_BTN_CHAT: on_chat_selected(); return 0;
+        case ID_BTN_RATE: on_rate_selected(hwnd); return 0;
         }
         break;
     case WM_DESTROY:
@@ -693,6 +847,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     sync_init(&g_sync, keypath, "green", on_remote_event, NULL);
     log_printf("sync init done, pubkey=%s\n", g_sync.pubkey);
     sync_set_dm_callback(&g_sync, on_dm_received, NULL);
+    g_ratings = rating_store_new();
+    sync_set_generic_callback(&g_sync, on_generic_event, NULL);
     {
         char fav_path[LFG_PATH_MAX];
         get_fav_path(fav_path, sizeof(fav_path));

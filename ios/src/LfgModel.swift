@@ -14,6 +14,7 @@ final class LfgModel: ObservableObject {
     @Published private(set) var lastSync: Date?
     @Published private(set) var favourites: [String] = []
     @Published private(set) var conversations: [String: [ChatMessage]] = [:]
+    @Published private(set) var ratingSummaries: [String: RatingSummary] = [:]
 
     struct Entry: Identifiable, Equatable {
         let id: String
@@ -22,6 +23,13 @@ final class LfgModel: ObservableObject {
         let detail: String
         let source: Int32
         let lastSeen: Date
+    }
+
+    struct RatingSummary: Equatable {
+        let competent: Int
+        let friendly: Int
+        let listens: Int
+        let count: Int
     }
 
     struct ChatMessage: Identifiable, Equatable {
@@ -34,6 +42,8 @@ final class LfgModel: ObservableObject {
     private var state: OpaquePointer?
     private var syncState: UnsafeMutablePointer<SyncState>?
     private var favList: OpaquePointer?
+    private var ratingStore: OpaquePointer?
+    private var genericWrapper: GenericCallbackWrapper?
     private var syncThread: Thread?
     private var running = false
     private var wrapper: CallbackWrapper?
@@ -58,6 +68,13 @@ final class LfgModel: ObservableObject {
     private final class CallbackWrapper {
         let callback: SyncOnEvent
         init(_ cb: @escaping @convention(c) (UnsafePointer<SyncRemoteEntry>?, UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void) {
+            callback = cb
+        }
+    }
+
+    private final class GenericCallbackWrapper {
+        let callback: @convention(c) (Int32, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UInt64, UnsafeMutableRawPointer?) -> Void
+        init(_ cb: @escaping @convention(c) (Int32, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UInt64, UnsafeMutableRawPointer?) -> Void) {
             callback = cb
         }
     }
@@ -112,6 +129,22 @@ final class LfgModel: ObservableObject {
                   Unmanaged.passUnretained(self).toOpaque())
         sync_set_dm_callback(syncState, dmWrapper!.callback,
                              Unmanaged.passUnretained(self).toOpaque())
+        ratingStore = rating_store_new()
+        genericWrapper = GenericCallbackWrapper { kind, pubkey, dtag, content, createdAt, userdata in
+            guard let pubkey, let dtag, let content, let userdata else { return }
+            let model = Unmanaged<LfgModel>.fromOpaque(userdata).takeUnretainedValue()
+            model.stateQueue.sync {
+                if kind == 30079 {
+                    _ = rating_record(model.ratingStore, pubkey, dtag, content, createdAt)
+                } else if kind == 30080 {
+                    let agree = content.contains("\"agree\":true")
+                    _ = vote_record(model.ratingStore, pubkey, dtag, agree ? 1 : 0, createdAt)
+                }
+            }
+            DispatchQueue.main.async { model.refreshRatings() }
+        }
+        sync_set_generic_callback(syncState, genericWrapper!.callback,
+                                   Unmanaged.passUnretained(self).toOpaque())
         for r in Self.relays {
             r.withCString { sync_add_relay(syncState, $0) }
         }
@@ -130,6 +163,9 @@ final class LfgModel: ObservableObject {
             }
             if let favList {
                 fav_free(favList)
+            }
+            if let ratingStore {
+                rating_store_free(ratingStore)
             }
         }
     }
@@ -217,6 +253,66 @@ final class LfgModel: ObservableObject {
             _ = fav_toggle(favList, name)
         }
         refreshFavourites()
+    }
+
+    // MARK: - Ratings
+
+    func refreshRatings() {
+        guard let ratingStore else { return }
+        stateQueue.sync {
+            rating_store_finalize(ratingStore)
+        }
+        var out: [String: RatingSummary] = [:]
+        stateQueue.sync {
+            for (name, pub) in nameToPubkey {
+                var c: Int32 = 0, f: Int32 = 0, l: Int32 = 0, n: Int32 = 0
+                pub.withCString { pp in
+                    if rating_summary(ratingStore, pp, &c, &f, &l, &n) == 0 {
+                        out[name] = RatingSummary(competent: Int(c), friendly: Int(f),
+                                                  listens: Int(l), count: Int(n))
+                    }
+                }
+            }
+        }
+        ratingSummaries = out
+    }
+
+    func rate(name: String, competent: Int, friendly: Int, listens: Int) {
+        guard let pub = pubkeyFor(name), let sp = syncState else { return }
+        publishQueue.async {
+            pub.withCString { pp in
+                _ = self.syncQueue.sync {
+                    rating_publish(sp, pp, Int32(competent), Int32(friendly), Int32(listens))
+                }
+            }
+        }
+    }
+
+    /// Agree/disagree with a rating some rater published about us.
+    /// The rating id is looked up from the local store.
+    func vote(raterName: String, aboutName: String, agree: Bool) {
+        guard let raterPub = pubkeyFor(raterName),
+              let aboutPub = pubkeyFor(aboutName),
+              let sp = syncState, let ratingStore else { return }
+        publishQueue.async {
+            var ratingId: String?
+            self.stateQueue.sync {
+                rating_store_finalize(ratingStore)
+                raterPub.withCString { rp in
+                    aboutPub.withCString { ap in
+                        if let idc = rating_find_id(ratingStore, rp, ap) {
+                            ratingId = String(cString: idc)
+                        }
+                    }
+                }
+            }
+            guard let ratingId else { return }
+            ratingId.withCString { rid in
+                _ = self.syncQueue.sync {
+                    vote_publish(sp, rid, agree ? 1 : 0)
+                }
+            }
+        }
     }
 
     // MARK: - Chat

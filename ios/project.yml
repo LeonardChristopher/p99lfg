@@ -11,10 +11,10 @@ targets:
     platform: iOS
     sources:
       - path: ../src
-        includes: ["core.c", "sha256.c", "nostr.c", "sync.c", "ws_client.c", "aes.c", "chat.c", "fav.c"]
+        includes: ["core.c", "sha256.c", "nostr.c", "sync.c", "ws_client.c", "aes.c", "chat.c", "fav.c", "rating.c"]
         headerVisibility: project
       - path: ../src
-        includes: ["core.h", "sha256.h", "nostr.h", "sync.h", "ws_client.h", "tls_hooks.h", "aes.h", "chat.h", "fav.h"]
+        includes: ["core.h", "sha256.h", "nostr.h", "sync.h", "ws_client.h", "tls_hooks.h", "aes.h", "chat.h", "fav.h", "rating.h"]
         buildPhase: headers
       - path: src
         includes: ["tls_apple.m"]
