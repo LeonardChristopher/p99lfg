@@ -101,7 +101,10 @@ final class LfgModel: ObservableObject {
             guard let entry, let userdata else { return }
             let model = Unmanaged<LfgModel>.fromOpaque(userdata).takeUnretainedValue()
             if entry.pointee.lfg != 0, let pubkey {
-                model.recordPubkey(name: String(cString: entry.pointee.name),
+                let name = withUnsafeBytes(of: entry.pointee.name) { buf in
+                    String(cString: buf.baseAddress!.assumingMemoryBound(to: CChar.self))
+                }
+                model.recordPubkey(name: name,
                                    pubkey: String(cString: pubkey))
             }
             model.stateQueue.sync {
@@ -131,7 +134,7 @@ final class LfgModel: ObservableObject {
                 if kind == 30079 {
                     _ = rating_record(model.ratingStore, pubkey, dtag, content, createdAt)
                 } else if kind == 30080 {
-                    let agree = content.contains("\"agree\":true") ? 1 : 0
+                    let agree = String(cString: content).contains("\"agree\":true") ? 1 : 0
                     _ = vote_record(model.ratingStore, pubkey, dtag, agree, createdAt)
                 }
             }
@@ -224,11 +227,14 @@ final class LfgModel: ObservableObject {
             let n = lfg_count(state)
             for i in 0..<n {
                 guard let e = lfg_get(state, i) else { continue }
+                let c2s = { (p: UnsafeRawPointer) in
+                    String(cString: p.assumingMemoryBound(to: CChar.self))
+                }
                 out.append(Entry(
-                    id: String(cString: e.pointee.name),
-                    name: String(cString: e.pointee.name),
-                    zone: String(cString: e.pointee.zone),
-                    detail: String(cString: e.pointee.detail),
+                    id: withUnsafeBytes(of: e.pointee.name) { c2s($0.baseAddress!) },
+                    name: withUnsafeBytes(of: e.pointee.name) { c2s($0.baseAddress!) },
+                    zone: withUnsafeBytes(of: e.pointee.zone) { c2s($0.baseAddress!) },
+                    detail: withUnsafeBytes(of: e.pointee.detail) { c2s($0.baseAddress!) },
                     source: e.pointee.source,
                     lastSeen: Date(timeIntervalSince1970: TimeInterval(e.pointee.last_seen))
                 ))
@@ -418,9 +424,9 @@ final class LfgModel: ObservableObject {
         var plain = [CChar](repeating: 0, count: 600)
         sender.withCString { sptr in
             content.withCString { cptr in
-                sp.pointee.privkey.withCString { _ in
-                    _ = chat_try_decrypt(sp.pointee.privkey, sptr, cptr,
-                                         &plain, plain.count)
+                withUnsafeBytes(of: sp.pointee.privkey) { pk in
+                    _ = chat_try_decrypt(pk.baseAddress!.assumingMemoryBound(to: CChar.self),
+                                         sptr, cptr, &plain, plain.count)
                 }
             }
         }
