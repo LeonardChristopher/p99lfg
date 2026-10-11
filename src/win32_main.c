@@ -26,6 +26,8 @@
 #define ID_ED_ZONE 106
 #define ID_ST_DIR 106
 #define ID_ST_DIR_LBL 107
+#define ID_BTN_KEY_COPY 110
+#define ID_BTN_KEY_PASTE 111
 
 static LfgState *g_state;
 static HWND g_hwnd, g_list, g_ed_name, g_ed_zone, g_st_dir;
@@ -177,6 +179,75 @@ static void on_remove(void)
     sync_publish(&g_sync, content);
 }
 
+static void get_key_path(char *out, size_t outsz)
+{
+    GetModuleFileNameA(NULL, out, (DWORD)outsz);
+    char *slash = strrchr(out, '\\');
+    if (slash)
+        strcpy(slash + 1, "p99lfg.key");
+    else
+        strcat(out, ".key");
+}
+
+/* Copy the Nostr secret key to the clipboard so it can be entered on a
+ * phone — sharing the key shares the Nostr identity across devices. */
+static void on_key_copy(void)
+{
+    char keypath[LFG_PATH_MAX];
+    get_key_path(keypath, sizeof(keypath));
+    FILE *f = fopen(keypath, "r");
+    if (!f)
+        return;
+    char hex[NOSTR_PRIVKEY_HEX] = {0};
+    int ok = fscanf(f, "%64s", hex) == 1;
+    fclose(f);
+    if (!ok)
+        return;
+    if (!OpenClipboard(g_hwnd))
+        return;
+    EmptyClipboard();
+    HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, strlen(hex) + 1);
+    if (h) {
+        char *p = GlobalLock(h);
+        if (p) {
+            strcpy(p, hex);
+            GlobalUnlock(h);
+            SetClipboardData(CF_TEXT, h);
+        }
+    }
+    CloseClipboard();
+    MessageBoxA(g_hwnd, "Secret key copied.\n\nPaste it into the iOS/Android app's\nImport key field to share your identity.",
+                "p99lfg", MB_OK | MB_ICONINFORMATION);
+}
+
+static void on_key_paste(HWND hwnd)
+{
+    if (!OpenClipboard(hwnd))
+        return;
+    HANDLE h = GetClipboardData(CF_TEXT);
+    char hex[NOSTR_PRIVKEY_HEX] = {0};
+    if (h) {
+        const char *p = GlobalLock(h);
+        if (p) {
+            snprintf(hex, sizeof(hex), "%s", p);
+            GlobalUnlock(h);
+        }
+    }
+    CloseClipboard();
+    char keypath[LFG_PATH_MAX];
+    get_key_path(keypath, sizeof(keypath));
+    char pubkey[NOSTR_PUBKEY_HEX];
+    if (hex[0] && nostr_import_key(keypath, hex, pubkey) == 0) {
+        snprintf(g_sync.pubkey, sizeof(g_sync.pubkey), "%s", pubkey);
+        snprintf(g_sync.privkey, sizeof(g_sync.privkey), "%s", hex);
+        MessageBoxA(hwnd, "Identity imported. Listings now publish under this key.",
+                    "p99lfg", MB_OK | MB_ICONINFORMATION);
+    } else {
+        MessageBoxA(hwnd, "Clipboard does not contain a valid key (64 hex chars).",
+                    "p99lfg", MB_OK | MB_ICONERROR);
+    }
+}
+
 static void on_pick_dir(HWND hwnd)
 {
     char dir[LFG_PATH_MAX];
@@ -223,6 +294,10 @@ static void create_controls(HWND hwnd, HFONT hf)
                   WS_CHILD | WS_VISIBLE, 395, 310, 75, 24, hwnd, (HMENU)ID_BTN_REMOVE, NULL, NULL);
     g_st_dir = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE,
                              10, 345, 460, 20, hwnd, (HMENU)ID_ST_DIR, NULL, NULL);
+    CreateWindowA("BUTTON", "Copy key",
+                  WS_CHILD | WS_VISIBLE, 10, 370, 75, 24, hwnd, (HMENU)ID_BTN_KEY_COPY, NULL, NULL);
+    CreateWindowA("BUTTON", "Paste key",
+                  WS_CHILD | WS_VISIBLE, 90, 370, 75, 24, hwnd, (HMENU)ID_BTN_KEY_PASTE, NULL, NULL);
 
     HWND ctrl = GetWindow(hwnd, GW_CHILD);
     while (ctrl) {
@@ -254,6 +329,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case ID_BTN_DIR: on_pick_dir(hwnd); return 0;
         case ID_BTN_ADD: on_add(); return 0;
         case ID_BTN_REMOVE: on_remove(); return 0;
+        case ID_BTN_KEY_COPY: on_key_copy(); return 0;
+        case ID_BTN_KEY_PASTE: on_key_paste(hwnd); return 0;
         }
         break;
     case WM_DESTROY:
@@ -355,12 +432,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
 
     /* Nostr identity lives next to the exe: p99lfg.key */
     char keypath[LFG_PATH_MAX];
-    GetModuleFileNameA(NULL, keypath, sizeof(keypath));
-    char *slash = strrchr(keypath, '\\');
-    if (slash)
-        strcpy(slash + 1, "p99lfg.key");
-    else
-        strcat(keypath, ".key");
+    get_key_path(keypath, sizeof(keypath));
     log_printf("key path: %s\n", keypath);
     sync_init(&g_sync, keypath, "green", on_remote_event, NULL);
     log_printf("sync init done, pubkey=%s\n", g_sync.pubkey);

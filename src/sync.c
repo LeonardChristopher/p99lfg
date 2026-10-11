@@ -62,6 +62,26 @@ void sync_init(SyncState *s, const char *keyfile_path, const char *server,
     s->userdata = userdata;
 }
 
+/* Reload the identity from the key file (e.g. after nostr_import_key).
+ * Updates privkey/pubkey in place. Returns 0 on success. */
+int sync_reload_key(SyncState *s, const char *keyfile_path)
+{
+    FILE *f = fopen(keyfile_path, "r");
+    if (!f)
+        return -1;
+    char hex[NOSTR_PRIVKEY_HEX] = {0};
+    int ok = fscanf(f, "%64s", hex) == 1;
+    fclose(f);
+    if (!ok)
+        return -1;
+    char pubkey[NOSTR_PUBKEY_HEX] = {0};
+    if (nostr_identity_load(keyfile_path, pubkey) != 0)
+        return -1;
+    snprintf(s->privkey, sizeof(s->privkey), "%s", hex);
+    snprintf(s->pubkey, sizeof(s->pubkey), "%s", pubkey);
+    return 0;
+}
+
 void sync_add_relay(SyncState *s, const char *url)
 {
     if (s->nrelays >= SYNC_MAX_RELAYS)

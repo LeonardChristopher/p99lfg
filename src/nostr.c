@@ -134,6 +134,43 @@ int nostr_identity_load(const char *path, char pubkey_out[NOSTR_PUBKEY_HEX])
     return 0;
 }
 
+/* Import an existing identity: validate the hex secret key, derive the
+ * pubkey, and persist it to the key file. Returns 0 on success. Used to
+ * share one Nostr identity between the Windows app and mobile apps. */
+int nostr_import_key(const char *path, const char *privkey_hex,
+                     char pubkey_out[NOSTR_PUBKEY_HEX])
+{
+    uint8_t sk[32];
+    if (!privkey_hex || from_hex(privkey_hex, sk, 32) != 0)
+        return -1;
+    char hex[NOSTR_PRIVKEY_HEX];
+    to_hex(sk, 32, hex);
+    secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
+    if (!ctx)
+        return -1;
+    secp256k1_keypair kp;
+    if (!secp256k1_keypair_create(ctx, &kp, sk)) {
+        secp256k1_context_destroy(ctx);
+        return -1;
+    }
+    secp256k1_xonly_pubkey xpub;
+    if (!secp256k1_keypair_xonly_pub(ctx, &xpub, NULL, &kp)) {
+        secp256k1_context_destroy(ctx);
+        return -1;
+    }
+    uint8_t pub[32];
+    secp256k1_xonly_pubkey_serialize(ctx, pub, &xpub);
+    to_hex(pub, 32, pubkey_out);
+    secp256k1_context_destroy(ctx);
+    FILE *f = fopen(path, "w");
+    if (!f)
+        return -1;
+    fputs(hex, f);
+    fputc('\n', f);
+    fclose(f);
+    return 0;
+}
+
 void nostr_serialize_for_id(const NostrEvent *ev, char *out, size_t outsz)
 {
     char esc_content[1024];

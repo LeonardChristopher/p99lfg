@@ -4,6 +4,7 @@ struct ContentView: View {
     @ObservedObject private var model = LfgModel.shared
 
     @State private var showAdd = false
+    @State private var showKey = false
     @State private var server = "green"
 
     var body: some View {
@@ -30,11 +31,9 @@ struct ContentView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(e.name)
                                     .font(.body.weight(.semibold))
-                                if !e.zone.isEmpty || !e.detail.isEmpty {
-                                    Text("\(e.zone) \(e.detail)")
-                                        .font(.footnote)
-                                        .foregroundColor(.secondary)
-                                }
+                                Text(rowSubtitle(e))
+                                    .font(.footnote)
+                                    .foregroundColor(.secondary)
                             }
                             Spacer()
                             Text("LFG")
@@ -72,10 +71,17 @@ struct ContentView: View {
             .navigationTitle("p99lfg")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        showAdd = true
-                    } label: {
-                        Image(systemName: "person.badge.plus")
+                    HStack {
+                        Button {
+                            showKey = true
+                        } label: {
+                            Image(systemName: "key")
+                        }
+                        Button {
+                            showAdd = true
+                        } label: {
+                            Image(systemName: "person.badge.plus")
+                        }
                     }
                 }
             }
@@ -84,51 +90,19 @@ struct ContentView: View {
                     model.markLfg(name: name, zone: zone, detail: detail)
                 }
             }
+            .sheet(isPresented: $showKey) {
+                KeyView()
+            }
             .onAppear { model.start() }
+            .onChange(of: server) { newValue in
+                model.setServer(newValue)
+            }
         }
     }
-}
 
-struct AddCharacterView: View {
-    var onAdd: (String, String, String) -> Void
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var name = ""
-    @State private var zone = ""
-    @State private var detail = ""
-
-    var body: some View {
-        NavigationView {
-            Form {
-                Section {
-                    TextField("Character name", text: $name)
-                } header: {
-                    Text("Required")
-                }
-                Section {
-                    TextField("Zone", text: $zone)
-                    TextField("Class and level", text: $detail)
-                } header: {
-                    Text("Optional")
-                } footer: {
-                    Text("Stays listed until removed or stale (30 min).")
-                }
-            }
-            .navigationTitle("Mark LFG")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Add") {
-                        onAdd(name.trimmingCharacters(in: .whitespaces),
-                              zone.trimmingCharacters(in: .whitespaces),
-                              detail.trimmingCharacters(in: .whitespaces))
-                        dismiss()
-                    }
-                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-            }
-        }
+    private func rowSubtitle(_ e: LfgModel.Entry) -> String {
+        var parts = [e.detail]
+        if !e.zone.isEmpty { parts.append(e.zone) }
+        return parts.filter { !$0.isEmpty }.joined(separator: " · ")
     }
 }

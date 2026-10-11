@@ -45,6 +45,10 @@ void sync_init(SyncState *s, const char *keyfile_path, const char *server,
                SyncOnEvent cb, void *userdata);
 void sync_add_relay(SyncState *s, const char *url);
 
+/* Reload the identity (privkey+pubkey) from the key file, e.g. after
+ * nostr_import_key replaced it. Returns 0 on success. */
+int sync_reload_key(SyncState *s, const char *keyfile_path);
+
 size_t sync_build_content(char *out, size_t outsz, const char *name,
                           const char *zone, const char *detail, int lfg);
 

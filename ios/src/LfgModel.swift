@@ -176,6 +176,43 @@ final class LfgModel: ObservableObject {
         }
     }
 
+    /// Import the Windows app's Nostr key so both devices share one identity.
+    /// Returns the derived pubkey on success, nil on a bad key.
+    func importKey(hex: String) -> String? {
+        let hexOnly = hex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        var pubkey = [CChar](repeating: 0, count: 65)
+        let ok = hexOnly.withCString { cstr -> Int32 in
+            nostr_import_key(keyPath, cstr, &pubkey)
+        }
+        guard ok == 0, let sp = syncState else { return nil }
+        syncQueue.sync {
+            _ = sync_reload_key(sp, keyPath)
+        }
+        let pub = String(cString: pubkey)
+        DispatchQueue.main.async { self.myPubkey = pub }
+        return pub
+    }
+
+    /// The secret key, for copying to another device (e.g. the Windows app).
+    func exportKeyHex() -> String? {
+        guard let secret = try? String(contentsOfFile: keyPath, encoding: .ascii) else {
+            return nil
+        }
+        return secret.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func setServer(_ server: String) {
+        guard let sp = syncState else { return }
+        syncQueue.sync {
+            server.withCString { s in
+                withUnsafeMutablePointer(to: &sp.pointee.server) { dst in
+                    _ = strncpy(dst, s, MemoryLayout.size(ofValue: sp.pointee.server) - 1)
+                    dst[MemoryLayout.size(ofValue: sp.pointee.server) - 1] = 0
+                }
+            }
+        }
+    }
+
     private func publishAsync(sp: UnsafeMutablePointer<SyncState>,
                              name: String, zone: String, detail: String, lfg: Bool) {
         publishQueue.async {

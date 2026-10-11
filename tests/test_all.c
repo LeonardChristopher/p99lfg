@@ -181,6 +181,44 @@ static void test_sync_messages(void)
     CHECK(ws_parse_url("wss://relay.example.com", &u) == 0 && u.use_tls, "wss parse");
 }
 
+/* Import the Windows key on a mobile device: same secret, same pubkey. */
+static void test_key_import(void)
+{
+    const char *sk = "0000000000000000000000000000000000000000000000000000000000000003";
+    const char *path = "/tmp/p99lfg_test_import.key";
+    remove(path);
+
+    char pub1[65] = {0}, pub2[65] = {0};
+    CHECK(nostr_identity_load(path, pub1) == 0, "identity load creates key");
+    char sk1[65] = {0};
+    FILE *f = fopen(path, "r");
+    fscanf(f, "%64s", sk1);
+    fclose(f);
+
+    /* importing a different key replaces the file and derives its pubkey */
+    CHECK(nostr_import_key(path, sk, pub2) == 0, "import key");
+    f = fopen(path, "r");
+    char sk2[65] = {0};
+    fscanf(f, "%64s", sk2);
+    fclose(f);
+    CHECK(strcmp(sk1, sk2) != 0, "imported key differs from generated");
+    CHECK(strcmp(sk2, sk) == 0, "file holds imported secret");
+
+    /* BIP340 vector #1 pubkey for secret 0x...03 */
+    const char *expect_pub =
+        "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9";
+    CHECK(strcmp(pub2, expect_pub) == 0, "imported key derives correct pubkey");
+
+    /* sync_reload_key picks the new identity up */
+    SyncState s;
+    sync_init(&s, path, "green", NULL, NULL);
+    CHECK(sync_reload_key(&s, path) == 0, "sync reload key");
+    CHECK(strcmp(s.pubkey, expect_pub) == 0, "sync state holds imported pubkey");
+
+    CHECK(nostr_import_key(path, "not-hex", pub2) != 0, "import rejects bad hex");
+    remove(path);
+}
+
 int main(void)
 {
     test_sha256_vectors();
@@ -188,6 +226,7 @@ int main(void)
     test_event_serialization_and_sign();
     test_core_parser();
     test_sync_messages();
+    test_key_import();
     printf("\n%s (%d failures)\n", fails ? "TESTS FAILED" : "ALL TESTS PASSED", fails);
     return fails ? 1 : 0;
 }
