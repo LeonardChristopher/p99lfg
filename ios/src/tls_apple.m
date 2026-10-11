@@ -68,9 +68,9 @@ static void on_state_change(nw_connection_t conn, nw_connection_state_t state, v
 static void pump_receive(TlsCtx *t)
 {
     nw_connection_receive(t->conn, 1, sizeof(t->buf) - t->buflen,
-                         ^(dispatch_data_t data, NWEndpoint_t endpoint,
-                           bool is_complete, NSError *error) {
-        (void)endpoint;
+                         ^(dispatch_data_t data, nw_content_context_t context,
+                           bool is_complete, nw_error_t error) {
+        (void)context;
         if (error) {
             t->eof = 1;
         } else if (data && !is_complete) {
@@ -101,16 +101,13 @@ static int tls_connect_impl(const char *host, void *sockp, TlsCtx **out)
     char portstr[8];
     snprintf(portstr, sizeof(portstr), "%u", (unsigned)ntohs(peer_port(sockp)));
     nw_endpoint_t ep = nw_endpoint_create_host(host, portstr);
-    if (!ep)
-        goto fail;
-
-    nw_parameters_t params = nw_parameters_create_secure_tcp(NULL, NULL);
-    if (!params)
-        goto fail;
+    nw_parameters_t params = ep ? nw_parameters_create_secure_tcp(NULL, NULL) : NULL;
     /* TLS with default trust policy (validates hostname) */
-    t->conn = nw_connection_create(ep, params);
-    if (!t->conn)
-        goto fail;
+    t->conn = (ep && params) ? nw_connection_create(ep, params) : NULL;
+    if (!t->conn) {
+        free(t);
+        return -1;
+    }
 
     nw_connection_set_state_changed_handler(t->conn,
         ^(nw_connection_state_t state, nw_error_t error) {
@@ -120,16 +117,20 @@ static int tls_connect_impl(const char *host, void *sockp, TlsCtx **out)
     nw_connection_start(t->conn);
 
     long r = dispatch_semaphore_wait(t->sem, dispatch_time(DISPATCH_TIME_NOW, 15ULL * NSEC_PER_SEC));
-    if (r != 0 || nw_connection_get_state(t->conn) != nw_connection_state_ready)
-        goto fail;
+    if (r != 0) {
+        nw_connection_cancel(t->conn);
+        free(t);
+        return -1;
+    }
+    /* state handler only signals on ready/failed/cancelled */
+    if (nw_connection_get_current_path(t->conn) == NULL) {
+        nw_connection_cancel(t->conn);
+        free(t);
+        return -1;
+    }
 
     *out = t;
     return 0;
-fail:
-    if (t->conn)
-        nw_connection_cancel(t->conn);
-    free(t);
-    return -1;
 }
 
 static int tls_send_impl(TlsCtx *t, const void *data, unsigned int len)
