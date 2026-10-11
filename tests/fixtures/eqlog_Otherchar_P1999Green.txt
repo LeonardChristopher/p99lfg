@@ -1,0 +1,7 @@
+[Sun Oct 11 14:58:10 2026] Players in EverQuest:
+[Sun Oct 11 14:58:10 2026] ---------------------------
+[Sun Oct 11 14:58:10 2026] [40 Bard] Orgtal (Wood Elf) <Good Guys> ZONE: ecommons  LFG
+[Sun Oct 11 14:58:10 2026] [60 Warlord] Pyroboooze (Wood Elf)  ZONE: ecommons  LFG
+[Sun Oct 11 14:58:10 2026] [45 Wizard] Pycelle (High Elf) <Smoking Lounge> ZONE: ecommons  LFG
+[Sun Oct 11 14:58:10 2026] [51 Reaver] Ggorb (Ogre) <Friendly Druids> ZONE: velketor
+[Sun Oct 11 14:58:11 2026] There are 8 players in EverQuest.

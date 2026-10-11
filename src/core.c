@@ -54,12 +54,50 @@ static int copy_until(char *dst, size_t dstsz, const char *src, const char *end)
 
 const char *lfg_name_from_filename(const char *filename)
 {
+    static char buf[LFG_NAME_MAX];
     const char *base = strrchr(filename, '/');
     base = base ? base + 1 : filename;
-    const char *us = strchr(base, '_');
-    if (!us)
-        return base;
-    return us + 1;
+    /* eqlog_NAME_P1999Green.txt -> NAME */
+    if (strncmp(base, "eqlog_", 6) == 0)
+        base += 6;
+    size_t n = 0;
+    while (base[n] && base[n] != '_' && base[n] != '.')
+        n++;
+    if (n >= sizeof(buf))
+        n = sizeof(buf) - 1;
+    memcpy(buf, base, n);
+    buf[n] = '\0';
+    return buf;
+}
+
+static time_t parse_log_timestamp(const char *line)
+{
+    /* "[Sun Oct 11 14:58:10 2026] ..." -> epoch seconds, or 0 if absent */
+    if (line[0] != '[')
+        return 0;
+    static const char *months[] = { "Jan","Feb","Mar","Apr","May","Jun",
+                                    "Jul","Aug","Sep","Oct","Nov","Dec" };
+    char wd[8], mon[8];
+    int day, hh, mm, ss, yr;
+    if (sscanf(line, "[%3s %3s %d %d:%d:%d %d]", wd, mon, &day, &hh, &mm, &ss, &yr) != 7)
+        return 0;
+    int mon_idx = -1;
+    for (int i = 0; i < 12; i++)
+        if (strcmp(mon, months[i]) == 0) {
+            mon_idx = i;
+            break;
+        }
+    if (mon_idx < 0)
+        return 0;
+    struct tm tm = {0};
+    tm.tm_year = yr - 1900;
+    tm.tm_mon = mon_idx;
+    tm.tm_mday = day;
+    tm.tm_hour = hh;
+    tm.tm_min = mm;
+    tm.tm_sec = ss;
+    tm.tm_isdst = -1;
+    return mktime(&tm);
 }
 
 static int find_marker(const char *hay, const char *needle)
@@ -182,7 +220,11 @@ static void scan_dir(LfgState *s)
         size_t len = strlen(fn);
         if (len < 12 || !starts_with(fn, "eqlog_"))
             continue;
-        if (!strstr(fn, "_project1999.txt") && !strstr(fn, "_p1999.txt"))
+        if (!strstr(fn, ".txt"))
+            continue;
+        /* accept P99 naming across servers: eqlog_NAME_P1999Green.txt,
+           eqlog_NAME_project1999.txt, etc. */
+        if (!strstr(fn, "P1999") && !strstr(fn, "p1999") && !strstr(fn, "project1999"))
             continue;
         if (find_log_by_name(s, lfg_name_from_filename(fn)))
             continue;
@@ -219,21 +261,24 @@ static void read_new_lines(LfgState *s, LogFile *lf, time_t now)
     while (fgets(line, sizeof(line), lf->fp)) {
         char tstamp[32] = {0};
         const char *rest = line;
+        time_t line_time = 0;
         if (line[0] == '[') {
             const char *close = strchr(line, ']');
             if (close && close - line < 30) {
                 copy_until(tstamp, sizeof(tstamp), line + 1, close);
                 rest = close + 1;
+                line_time = parse_log_timestamp(line);
             }
         }
+        time_t stamp = line_time > 0 ? line_time : now;
         LfgLine parsed;
         int kind = lfg_parse_line(rest, &parsed);
         if (kind == LFG_LINE_SELF_ON)
-            upsert(s, lf->name, parsed.zone, parsed.detail, LFG_SRC_LOG, now);
+            upsert(s, lf->name, parsed.zone, parsed.detail, LFG_SRC_LOG, stamp);
         else if (kind == LFG_LINE_SELF_OFF)
             lfg_remove(s, lf->name);
         else if (kind == LFG_LINE_WHO)
-            upsert(s, parsed.name, parsed.zone, parsed.detail, LFG_SRC_LOG, now);
+            upsert(s, parsed.name, parsed.zone, parsed.detail, LFG_SRC_LOG, stamp);
     }
     lf->offset = ftell(lf->fp);
 }

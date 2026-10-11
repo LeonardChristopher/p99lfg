@@ -1,5 +1,0 @@
-[Mon Oct 10 12:00:01 2025] Welcome to EverQuest!
-[Mon Oct 10 12:00:05 2025] You say, 'hello'
-[Mon Oct 10 12:01:00 2025] You are now LFG.
-[Mon Oct 10 12:05:00 2025] You have entered The Sebilis.
-[Mon Oct 10 12:06:00 2025] You are no longer LFG.
