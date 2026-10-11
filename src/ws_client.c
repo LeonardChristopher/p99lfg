@@ -116,6 +116,12 @@ static int tcp_connect(const WsUrl *url)
         return -1;
     }
     freeaddrinfo(res);
+#ifndef _WIN32
+    /* Bounded I/O so a silent relay can't stall the poll loop forever. */
+    struct timeval tv = {15, 0};
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const void *)&tv, sizeof(tv));
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const void *)&tv, sizeof(tv));
+#endif
     return (int)s;
 }
 
