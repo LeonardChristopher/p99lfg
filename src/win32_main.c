@@ -61,18 +61,12 @@ static DWORD WINAPI sync_thread(LPVOID arg)
     (void)arg;
     int round = 0;
     while (g_sync_thread_run) {
-        __try {
-            sync_poll(&g_sync);
-            if (g_log) {
-                log_printf("sync poll round %d: ", round);
-                for (int i = 0; i < g_sync.nrelays; i++)
-                    log_printf("[%s connected=%d] ", g_sync.relays[i].url, g_sync.relays[i].connected);
-                log_printf("\n");
-            }
-        } __except (1) {
-            log_printf("sync poll round %d CRASHED in network code, disabling sync\n", round);
-            g_sync_thread_run = 0;
-            return 1;
+        sync_poll(&g_sync);
+        if (g_log) {
+            log_printf("sync poll round %d: ", round);
+            for (int i = 0; i < g_sync.nrelays; i++)
+                log_printf("[%s connected=%d] ", g_sync.relays[i].url, g_sync.relays[i].connected);
+            log_printf("\n");
         }
         round++;
         for (int i = 0; i < 50 && g_sync_thread_run; i++)
