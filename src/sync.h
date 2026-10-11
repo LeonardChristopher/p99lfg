@@ -8,28 +8,35 @@
 /* Synchronize LFG entries over Nostr relays.
  *
  * Publish: a kind 30078 parameterized replaceable event per server (d tag =
- * "green"/"blue"/"teal"/"red"), tagged #t p99lfg, containing a JSON array of
- * the local player's LFG characters. Because it's parameterized+replaceable,
- * re-publishing replaces the previous state (so clearing LFG = publish empty
- * array or delete).
+ * "green"/"blue"/...), tagged #t p99lfg, whose content is a JSON object
+ * {"v":1,"name":...,"zone":...,"detail":...,"lfg":bool} for the local
+ * player's LFG characters. Re-publishing replaces the previous state.
  *
- * Subscribe: REQ filter kinds [30078], #t [p99lfg]. Entries older than
- * stale_minutes are dropped when rendering.
+ * Subscribe: REQ filter kinds [30078], #t [p99lfg].
  */
 
 typedef struct {
     char url[192];
     int enabled;
-} SyncRelayCfg;
-
-typedef void (*SyncOnEvent)(const char *content_json, void *userdata);
+    int connected;
+} SyncRelayState;
 
 typedef struct {
-    SyncRelayCfg relays[SYNC_MAX_RELAYS];
+    char name[64];
+    char zone[64];
+    char detail[96];
+    int lfg;
+} SyncRemoteEntry;
+
+/* Callback when a remote player's LFG event arrives. */
+typedef void (*SyncOnEvent)(const SyncRemoteEntry *entry, const char *pubkey, void *userdata);
+
+typedef struct {
+    SyncRelayState relays[SYNC_MAX_RELAYS];
     int nrelays;
     char privkey[NOSTR_PRIVKEY_HEX];
     char pubkey[NOSTR_PUBKEY_HEX];
-    char server[32]; /* d tag: green/blue/teal/red */
+    char server[32];
     SyncOnEvent on_event;
     void *userdata;
 } SyncState;
@@ -38,11 +45,17 @@ void sync_init(SyncState *s, const char *keyfile_path, const char *server,
                SyncOnEvent cb, void *userdata);
 void sync_add_relay(SyncState *s, const char *url);
 
-/* Publish current LFG list (json array built by caller via sync_build_content). */
-int sync_publish(SyncState *s, const char *content_json);
-
-/* Build the content JSON for one character. */
 size_t sync_build_content(char *out, size_t outsz, const char *name,
                           const char *zone, const char *detail, int lfg);
+
+int sync_publish(SyncState *s, const char *content_json);
+
+/* One non-blocking-ish pump: for each relay, connect if needed, send REQ,
+ * drain any arrived events into on_event. Call periodically (e.g. 5s). */
+void sync_poll(SyncState *s);
+
+/* Parse a relay message ("[\"EVENT\",sub,{...}]" or "[\"OK\",...]"). Returns 1
+ * if an EVENT was parsed and cb fired, 0 if not, -1 on malformed input. */
+int sync_handle_message(SyncState *s, const char *msg);
 
 #endif

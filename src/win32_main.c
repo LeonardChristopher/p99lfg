@@ -2,6 +2,7 @@
  * Single-file GUI. Build with mingw-w64 (see build-windows.sh or CI).
  */
 #include "core.h"
+#include "sync.h"
 
 #include <commdlg.h>
 #include <windows.h>
@@ -12,6 +13,7 @@
 #include <string.h>
 
 #define WM_POLL (WM_USER + 1)
+#define WM_REMOTE (WM_USER + 2)
 
 #define ID_LIST 100
 #define ID_BTN_REFRESH 101
@@ -26,6 +28,42 @@
 static LfgState *g_state;
 static HWND g_hwnd, g_list, g_ed_name, g_ed_zone, g_st_dir;
 static UINT g_timer;
+static SyncState g_sync;
+static int g_sync_thread_run;
+static HANDLE g_sync_thread;
+
+static const char *DEFAULT_RELAYS[] = {
+    "wss://nos.lol",
+    "wss://relay.damus.io",
+};
+
+static void upsert_remote(const SyncRemoteEntry *e)
+{
+    if (e->lfg)
+        lfg_add_manual(g_state, e->name, e->zone, e->detail);
+    else
+        lfg_remove(g_state, e->name);
+}
+
+static void on_remote_event(const SyncRemoteEntry *entry, const char *pubkey, void *ud)
+{
+    (void)pubkey; (void)ud;
+    if (!g_hwnd)
+        return;
+    upsert_remote(entry);
+    PostMessageA(g_hwnd, WM_REMOTE, 0, 0);
+}
+
+static DWORD WINAPI sync_thread(LPVOID arg)
+{
+    (void)arg;
+    while (g_sync_thread_run) {
+        sync_poll(&g_sync);
+        for (int i = 0; i < 50 && g_sync_thread_run; i++)
+            Sleep(100); /* ~5s between polls */
+    }
+    return 0;
+}
 
 static void refresh_dir_label(HWND hwnd)
 {
@@ -67,6 +105,10 @@ static void on_add(void)
     SetWindowTextA(g_ed_name, "");
     SetWindowTextA(g_ed_zone, "");
     populate_list();
+    /* publish to relays so other players see this character LFG */
+    char content[512];
+    sync_build_content(content, sizeof(content), name, zone, "", 1);
+    sync_publish(&g_sync, content);
 }
 
 static void on_remove(void)
@@ -75,9 +117,14 @@ static void on_remove(void)
     if (sel == LB_ERR)
         return;
     const LfgEntry *e = lfg_get(g_state, (int)sel);
-    if (e)
-        lfg_remove(g_state, e->name);
+    if (!e)
+        return;
+    lfg_remove(g_state, e->name);
     populate_list();
+    /* publish the cleared state */
+    char content[512];
+    sync_build_content(content, sizeof(content), e->name, e->zone, e->detail, 0);
+    sync_publish(&g_sync, content);
 }
 
 static void on_pick_dir(HWND hwnd)
@@ -149,6 +196,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_TIMER:
         do_poll();
         return 0;
+    case WM_REMOTE:
+        populate_list();
+        return 0;
     case WM_COMMAND:
         switch (LOWORD(wp)) {
         case ID_BTN_REFRESH: do_poll(); return 0;
@@ -158,6 +208,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         break;
     case WM_DESTROY:
+        g_sync_thread_run = 0;
+        if (g_sync_thread)
+            WaitForSingleObject(g_sync_thread, 6000);
         KillTimer(hwnd, g_timer);
         PostQuitMessage(0);
         return 0;
@@ -244,6 +297,20 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     char dir[LFG_PATH_MAX];
     guess_default_dir(dir, sizeof(dir));
     lfg_set_dir(g_state, dir);
+
+    /* Nostr identity lives next to the exe: p99lfg.key */
+    char keypath[LFG_PATH_MAX];
+    GetModuleFileNameA(NULL, keypath, sizeof(keypath));
+    char *slash = strrchr(keypath, '\\');
+    if (slash)
+        strcpy(slash + 1, "p99lfg.key");
+    else
+        strcat(keypath, ".key");
+    sync_init(&g_sync, keypath, "green", on_remote_event, NULL);
+    for (int i = 0; i < (int)(sizeof(DEFAULT_RELAYS)/sizeof(DEFAULT_RELAYS[0])); i++)
+        sync_add_relay(&g_sync, DEFAULT_RELAYS[i]);
+    g_sync_thread_run = 1;
+    g_sync_thread = CreateThread(NULL, 0, sync_thread, NULL, 0, NULL);
 
     WNDCLASSA wc = {0};
     wc.lpfnWndProc = WndProc;

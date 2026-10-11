@@ -1,6 +1,8 @@
 #include "core.h"
 #include "nostr.h"
 #include "sha256.h"
+#include "sync.h"
+#include "ws_client.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -110,12 +112,82 @@ static void test_core_parser(void)
     CHECK(lfg_parse_line("You say, 'hi'", &out) == LFG_LINE_NONE, "chat ignored");
 }
 
+static SyncRemoteEntry g_last_remote;
+static char g_last_pubkey[80];
+static int g_remote_calls;
+
+static void remote_cb(const SyncRemoteEntry *e, const char *pk, void *ud)
+{
+    (void)ud;
+    g_last_remote = *e;
+    snprintf(g_last_pubkey, sizeof(g_last_pubkey), "%s", pk);
+    g_remote_calls++;
+}
+
+static void json_escape_into(char *dst, size_t dstsz, const char *src)
+{
+    size_t o = 0;
+    for (const char *p = src; *p && o + 2 < dstsz; p++) {
+        if (*p == '"' || *p == '\\') {
+            dst[o++] = '\\';
+            dst[o++] = *p;
+        } else {
+            dst[o++] = *p;
+        }
+    }
+    dst[o] = '\0';
+}
+
+static void test_sync_messages(void)
+{
+    SyncState st;
+    sync_init(&st, "/tmp/p99lfg_test_key.txt", "green", remote_cb, NULL);
+    CHECK(strcmp(st.server, "green") == 0, "sync init server");
+
+    const char *okmsg =
+        "[\"OK\",\"abc\",\"true\"]";
+    CHECK(sync_handle_message(&st, okmsg) == 0, "OK message ignored");
+
+    char evmsg[1024];
+    char content[300], esc[600];
+    sync_build_content(content, sizeof(content), "Soandso", "sebilis", "60 Archmage", 1);
+    json_escape_into(esc, sizeof(esc), content);
+    snprintf(evmsg, sizeof(evmsg),
+        "[\"EVENT\",\"sub1\",{\"id\":\"x\",\"pubkey\":\"%s\",\"created_at\":1,\"kind\":30078,"
+        "\"tags\":[],\"content\":\"%s\",\"sig\":\"y\"}]",
+        "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20", esc);
+    CHECK(sync_handle_message(&st, evmsg) == 1, "EVENT message parsed");
+    CHECK(g_remote_calls == 1 && strcmp(g_last_remote.name, "Soandso") == 0 &&
+          strcmp(g_last_remote.zone, "sebilis") == 0 && strcmp(g_last_remote.detail, "60 Archmage") == 0,
+          "remote entry fields");
+
+    /* lfg:false should carry through */
+    char content2[300], esc2[600];
+    sync_build_content(content2, sizeof(content2), "Otherone", "unrest", "20 Necro", 0);
+    json_escape_into(esc2, sizeof(esc2), content2);
+    char evmsg2[1024];
+    snprintf(evmsg2, sizeof(evmsg2),
+        "[\"EVENT\",\"sub1\",{\"id\":\"x\",\"pubkey\":\"pk\",\"created_at\":1,\"kind\":30078,"
+        "\"tags\":[],\"content\":\"%s\",\"sig\":\"y\"}]", esc2);
+    CHECK(sync_handle_message(&st, evmsg2) == 1 && g_last_remote.lfg == 0,
+          "lfg=false parsed");
+
+    /* non-lfg-format content is ignored gracefully */
+    const char *junk =
+        "[\"EVENT\",\"sub1\",{\"content\":\"hello world\")]";
+    CHECK(sync_handle_message(&st, junk) == -1, "malformed event returns -1");
+
+    WsUrl u;
+    CHECK(ws_parse_url("wss://relay.example.com", &u) == 0 && u.use_tls, "wss parse");
+}
+
 int main(void)
 {
     test_sha256_vectors();
     test_schnorr_bip340();
     test_event_serialization_and_sign();
     test_core_parser();
+    test_sync_messages();
     printf("\n%s (%d failures)\n", fails ? "TESTS FAILED" : "ALL TESTS PASSED", fails);
     return fails ? 1 : 0;
 }

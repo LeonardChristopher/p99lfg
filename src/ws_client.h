@@ -20,8 +20,11 @@ typedef struct {
     int use_tls;
 } WsUrl;
 
+typedef struct TlsCtx TlsCtx;
+
 typedef struct {
     ws_socket_t sock;
+    TlsCtx *tls;
     int connected;
     unsigned char buf[8192];
     size_t len;

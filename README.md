@@ -58,8 +58,9 @@ attaches `p99lfg.exe` as an artifact on every push.
 
 - [x] Log scanner + parser (tested)
 - [x] Nostr signing + serialization (BIP340 vectors, tested)
-- [x] WebSocket client (loopback tested; wss/TLS pending)
-- [x] Win32 GUI shell
-- [ ] wss:// TLS support (SChannel) — currently ws:// only
-- [ ] GUI wiring for relay list + subscription loop
+- [x] WebSocket client, incl. required client-frame masking (loopback tested)
+- [x] wss:// TLS via Windows SChannel (built-in; needs on-Windows validation — CI builds it)
+- [x] Sync layer: publish on Mark LFG, subscribe loop feeding remote entries into the list (parser unit-tested)
+- [x] Win32 GUI wired to sync (background relay poll thread)
+- [ ] On-Windows smoke test of SChannel path against a real relay
 - [ ] iOS/Android later (core + nostr + sync are portable C)

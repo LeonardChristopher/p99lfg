@@ -1,8 +1,17 @@
 #include "ws_client.h"
+#include "tls_hooks.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Weak defaults so the core links without a TLS backend; tls_schannel.c
+ * overrides these on Windows. */
+__attribute__((weak)) int (*tls_connect_hook)(const char *, void *, TlsCtx **) = NULL;
+__attribute__((weak)) int (*tls_send_hook)(TlsCtx *, const void *, unsigned int) = NULL;
+__attribute__((weak)) int (*tls_recv_hook)(TlsCtx *, void *, unsigned int) = NULL;
+__attribute__((weak)) void (*tls_close_hook)(TlsCtx *) = NULL;
 
 #ifdef _WIN32
 #pragma comment(lib, "ws2_32.lib")
@@ -112,6 +121,11 @@ static int tcp_connect(const WsUrl *url)
 
 static int raw_send(WsConn *c, const void *data, size_t len)
 {
+    if (c->tls) {
+        if (tls_send_hook)
+            return tls_send_hook(c->tls, data, (unsigned int)len);
+        return -1;
+    }
     const char *p = data;
     while (len > 0) {
 #ifdef _WIN32
@@ -129,6 +143,11 @@ static int raw_send(WsConn *c, const void *data, size_t len)
 
 static int raw_recv(WsConn *c, void *data, size_t len)
 {
+    if (c->tls) {
+        if (tls_recv_hook)
+            return tls_recv_hook(c->tls, data, (unsigned int)len);
+        return -1;
+    }
 #ifdef _WIN32
     return recv(c->sock, data, (int)len, 0);
 #else
@@ -140,15 +159,18 @@ int ws_connect(WsConn *c, const WsUrl *url)
 {
     memset(c, 0, sizeof(*c));
     c->sock = WS_INVALID_SOCKET;
-    if (url->use_tls) {
-        /* TLS requires SChannel on Windows; not implemented in this drop.
-           Use ws:// against a local relay for testing. */
+    if (url->use_tls && !tls_connect_hook)
         return -1;
-    }
     int s = tcp_connect(url);
     if (s < 0)
         return -1;
     c->sock = (ws_socket_t)s;
+    if (url->use_tls) {
+        if (tls_connect_hook(url->host, (void *)(uintptr_t)c->sock, &c->tls) != 0) {
+            ws_close(c);
+            return -1;
+        }
+    }
 
     unsigned char rnd[16];
     for (int i = 0; i < 16; i++)
@@ -280,6 +302,11 @@ int ws_recv_text(WsConn *c, char *out, size_t outsz)
 
 void ws_close(WsConn *c)
 {
+    if (c->tls) {
+        if (tls_close_hook)
+            tls_close_hook(c->tls);
+        c->tls = NULL;
+    }
     if (c->sock != WS_INVALID_SOCKET) {
 #ifdef _WIN32
         closesocket(c->sock);
