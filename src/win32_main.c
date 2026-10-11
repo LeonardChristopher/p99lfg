@@ -4,8 +4,8 @@
 #include "core.h"
 #include "sync.h"
 
-#include <commdlg.h>
 #include <windows.h>
+#include <commdlg.h>
 #include <commctrl.h>
 
 #include <stdio.h>
