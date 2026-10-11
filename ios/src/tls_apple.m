@@ -11,6 +11,12 @@
 #import <sys/socket.h>
 #import <unistd.h>
 
+/* SSLSetIoFuncs was removed from recent SDK headers but the symbol remains
+ * available on iOS for backwards compatibility; declare it explicitly. */
+extern OSStatus SSLSetIoFuncs(SSLContextRef context,
+                              SSLReadFunc readFunc,
+                              SSLWriteFunc writeFunc) __attribute__((weak_import));
+
 struct TlsCtx {
     int fd;
     SSLContextRef ssl;
