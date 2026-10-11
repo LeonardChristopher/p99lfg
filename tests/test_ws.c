@@ -129,5 +129,6 @@ int main(void)
     return fails ? 1 : 0;
 }
 #else
+#include <stdio.h>
 int main(void) { printf("skipped on Windows\n"); return 0; }
 #endif
