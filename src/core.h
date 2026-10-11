@@ -38,6 +38,9 @@ const char *lfg_name_from_filename(const char *filename);
 
 typedef struct LfgState LfgState;
 
+typedef void (*LfgDebugFn)(const char *msg);
+void lfg_set_debug(LfgDebugFn fn);
+
 LfgState *lfg_new(void);
 void lfg_free(LfgState *s);
 void lfg_set_dir(LfgState *s, const char *dir);

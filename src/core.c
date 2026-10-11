@@ -3,10 +3,27 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+
+static LfgDebugFn g_debug_fn;
+
+void lfg_set_debug(LfgDebugFn fn) { g_debug_fn = fn; }
+
+static void dbg(const char *fmt, ...)
+{
+    if (!g_debug_fn)
+        return;
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    g_debug_fn(buf);
+}
 
 #define MAX_LOG_FILES 32
 #define MAX_ENTRIES 512
@@ -212,8 +229,11 @@ static int starts_with(const char *s, const char *prefix)
 static void scan_dir(LfgState *s)
 {
     DIR *d = opendir(s->dir);
-    if (!d)
+    if (!d) {
+        dbg("scan_dir: cannot open dir '%s' (errno=%d)", s->dir, errno);
         return;
+    }
+    dbg("scan_dir: opened '%s'", s->dir);
     struct dirent *de;
     while ((de = readdir(d)) != NULL) {
         const char *fn = de->d_name;
@@ -236,15 +256,19 @@ static void scan_dir(LfgState *s)
         lf->fp = NULL;
         lf->offset = 0;
         lf->truncated = 0;
+        dbg("scan_dir: watching '%s' as '%s'", fn, lf->name);
     }
     closedir(d);
+    dbg("scan_dir: %d log file(s) registered", s->nlogs);
 }
 
 static void read_new_lines(LfgState *s, LogFile *lf, time_t now)
 {
     struct stat st;
-    if (stat(lf->path, &st) != 0)
+    if (stat(lf->path, &st) != 0) {
+        dbg("read_new_lines: stat failed '%s'", lf->path);
         return;
+    }
     if (st.st_size < lf->offset) {
         lf->offset = 0;
         lf->truncated = 1;
@@ -273,12 +297,16 @@ static void read_new_lines(LfgState *s, LogFile *lf, time_t now)
         time_t stamp = line_time > 0 ? line_time : now;
         LfgLine parsed;
         int kind = lfg_parse_line(rest, &parsed);
-        if (kind == LFG_LINE_SELF_ON)
+        if (kind == LFG_LINE_SELF_ON) {
+            dbg("[%s] self LFG on", lf->name);
             upsert(s, lf->name, parsed.zone, parsed.detail, LFG_SRC_LOG, stamp);
-        else if (kind == LFG_LINE_SELF_OFF)
+        } else if (kind == LFG_LINE_SELF_OFF) {
+            dbg("[%s] self LFG off", lf->name);
             lfg_remove(s, lf->name);
-        else if (kind == LFG_LINE_WHO)
+        } else if (kind == LFG_LINE_WHO) {
+            dbg("[%s] who row: %s (%s)", lf->name, parsed.name, parsed.zone);
             upsert(s, parsed.name, parsed.zone, parsed.detail, LFG_SRC_LOG, stamp);
+        }
     }
     lf->offset = ftell(lf->fp);
 }

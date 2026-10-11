@@ -340,6 +340,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     log_open();
     log_printf("p99lfg starting\n");
     SetUnhandledExceptionFilter(crash_handler);
+    lfg_set_debug(log_printf);
     InitCommonControls();
     g_state = lfg_new();
     char dir[LFG_PATH_MAX];
