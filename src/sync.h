@@ -30,6 +30,7 @@ typedef struct {
     char zone[64];
     char detail[96];
     int lfg;
+    uint64_t created_at; /* from the event, 0 if unknown */
 } SyncRemoteEntry;
 
 /* Callback when a remote player's LFG event arrives. */

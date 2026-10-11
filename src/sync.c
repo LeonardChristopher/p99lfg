@@ -238,7 +238,17 @@ int sync_handle_message(SyncState *s, const char *msg)
     json_get_string(content, "zone", e.zone, sizeof(e.zone));
     json_get_string(content, "detail", e.detail, sizeof(e.detail));
     e.lfg = json_get_bool(content, "lfg", 1);
-
+    {
+        char nums[24] = {0};
+        const char *cp = strstr(evobj, "\"created_at\":");
+        if (cp) {
+            cp += 14;
+            size_t ni = 0;
+            while (*cp >= '0' && *cp <= '9' && ni < sizeof(nums) - 1)
+                nums[ni++] = *cp++;
+            e.created_at = strtoull(nums, NULL, 10);
+        }
+    }
     if (s->on_event)
         s->on_event(&e, pubkey, s->userdata);
     return 1;

@@ -50,6 +50,52 @@ static HWND g_chat_wnd, g_chat_edit, g_chat_input;
 
 #define WM_DMARRIVED (WM_USER + 3)
 
+/* ---- last-seen presence (option 1: freshness from event timestamps) ---- */
+#define PRESENCE_MAX 512
+#define PRESENCE_ONLINE_SECS 120
+#define PRESENCE_RECENT_SECS (30 * 60)
+
+typedef struct {
+    char name[64];
+    uint64_t last_seen;
+} PresenceEntry;
+
+static PresenceEntry g_presence[PRESENCE_MAX];
+static int g_npresence;
+
+static void presence_touch(const char *name, uint64_t when)
+{
+    if (!name[0])
+        return;
+    for (int i = 0; i < g_npresence; i++) {
+        if (strcmp(g_presence[i].name, name) == 0) {
+            if (when > g_presence[i].last_seen)
+                g_presence[i].last_seen = when;
+            return;
+        }
+    }
+    if (g_npresence >= PRESENCE_MAX)
+        return;
+    snprintf(g_presence[g_npresence].name, 64, "%s", name);
+    g_presence[g_npresence].last_seen = when;
+    g_npresence++;
+}
+
+static const char *presence_mark(const char *name)
+{
+    uint64_t now = (uint64_t)time(NULL);
+    for (int i = 0; i < g_npresence; i++) {
+        if (strcmp(g_presence[i].name, name) == 0) {
+            if (now <= g_presence[i].last_seen + PRESENCE_ONLINE_SECS)
+                return "[ON] ";
+            if (now <= g_presence[i].last_seen + PRESENCE_RECENT_SECS)
+                return "[recent] ";
+            return "[off] ";
+        }
+    }
+    return "[off] ";
+}
+
 #define ID_BTN_FAV 110
 #define ID_BTN_RATE 111
 #define ID_BTN_CHAT 112
@@ -120,6 +166,8 @@ static void on_remote_event(const SyncRemoteEntry *entry, const char *pubkey, vo
     if (!g_hwnd)
         return;
     upsert_remote(entry);
+    presence_touch(entry->name, entry->created_at ? entry->created_at
+                                                   : (uint64_t)time(NULL));
     PostMessageA(g_hwnd, WM_REMOTE, 0, 0);
 }
 
@@ -159,10 +207,12 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
     if (kind == 30079) {
         rating_record(g_ratings, pubkey, dtag, content, created_at);
         rating_store_finalize(g_ratings);
+        presence_touch(dtag, created_at);
     } else if (kind == 30080) {
         int agree = strstr(content, "\"agree\":true") != NULL;
         vote_record(g_ratings, pubkey, dtag, agree, created_at);
         rating_store_finalize(g_ratings);
+        presence_touch(pubkey, created_at);
     }
 }
 
@@ -209,11 +259,12 @@ static void populate_list(void)
             }
             char row[256];
             if (e)
-                snprintf(row, sizeof(row), "* %s  [%s]  %s",
-                         e->name, e->detail[0] ? e->detail : "?",
+                snprintf(row, sizeof(row), "* %s%s  [%s]  %s",
+                         presence_mark(name), e->name,
+                         e->detail[0] ? e->detail : "?",
                          e->zone[0] ? e->zone : "-");
             else
-                snprintf(row, sizeof(row), "* %s  (offline)", name);
+                snprintf(row, sizeof(row), "* %s%s  (offline)", presence_mark(name), name);
             SendMessageA(g_list, LB_ADDSTRING, 0, (LPARAM)row);
         }
         SendMessageA(g_list, LB_ADDSTRING, 0, (LPARAM)"--- All LFG ---");
@@ -223,8 +274,8 @@ static void populate_list(void)
         if (g_favs && fav_has(g_favs, e->name))
             continue;
         char row[256];
-        snprintf(row, sizeof(row), "%s  [%s]  %s%s%s",
-                 e->name,
+        snprintf(row, sizeof(row), "%s%s  [%s]  %s%s%s",
+                 presence_mark(e->name), e->name,
                  e->detail[0] ? e->detail : "?",
                  e->zone[0] ? e->zone : "-",
                  e->source == LFG_SRC_MANUAL ? "  (manual)" : "",
@@ -343,10 +394,18 @@ static void on_fav_toggle(void)
     char buf[256] = {0};
     SendMessageA(g_list, LB_GETTEXT, (WPARAM)sel, (LPARAM)buf);
     char *name = buf;
+    if (strncmp(name, "---", 3) == 0)
+        return;
     if (strncmp(name, "* ", 2) == 0)
         name += 2;
-    else if (strncmp(name, "---", 3) == 0)
-        return;
+    while (*name == '[') {           /* skip presence prefix [ON] etc. */
+        name = strchr(name, ']');
+        if (!name)
+            return;
+        name++;
+        if (*name == ' ')
+            name++;
+    }
     char *sp = strchr(name, ' ');
     if (sp)
         *sp = '\0';
@@ -389,10 +448,18 @@ static void on_rate(void)
     char buf[256] = {0};
     SendMessageA(g_list, LB_GETTEXT, (WPARAM)sel, (LPARAM)buf);
     char *name = buf;
-    if (strncmp(name, "* ", 2) == 0)
-        name += 2;
     if (strncmp(name, "---", 3) == 0)
         return;
+    if (strncmp(name, "* ", 2) == 0)
+        name += 2;
+    while (*name == '[') {           /* skip presence prefix [ON] etc. */
+        name = strchr(name, ']');
+        if (!name)
+            return;
+        name++;
+        if (*name == ' ')
+            name++;
+    }
     char *sp = strchr(name, ' ');
     if (sp)
         *sp = '\0';
