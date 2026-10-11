@@ -1,4 +1,5 @@
 #include "sync.h"
+#include "chat.h"
 #include "ws_client.h"
 
 #include <stdio.h>
@@ -308,4 +309,14 @@ void sync_poll(SyncState *s)
         }
         ws_close(&c);
     }
+}
+
+const char *sync_entry_name(const SyncRemoteEntry *e) { return e ? e->name : NULL; }
+const char *sync_entry_zone(const SyncRemoteEntry *e) { return e ? e->zone : NULL; }
+const char *sync_entry_detail(const SyncRemoteEntry *e) { return e ? e->detail : NULL; }
+
+int sync_decrypt_dm(SyncState *s, const char *sender, const char *content,
+                    char *out, size_t outsz)
+{
+    return chat_try_decrypt(s->privkey, sender, content, out, outsz);
 }

@@ -83,6 +83,15 @@ int sync_send_event(SyncState *s, const char *msg);
 void sync_set_dm_callback(SyncState *s, SyncOnDm cb, void *userdata);
 void sync_set_generic_callback(SyncState *s, SyncOnGeneric cb, void *userdata);
 
+/* Remote entry field accessors for Swift. */
+const char *sync_entry_name(const SyncRemoteEntry *e);
+const char *sync_entry_zone(const SyncRemoteEntry *e);
+const char *sync_entry_detail(const SyncRemoteEntry *e);
+
+/* Decrypt a DM using the state's own privkey (avoids array bridging). */
+int sync_decrypt_dm(SyncState *s, const char *sender, const char *content,
+                    char *out, size_t outsz);
+
 /* Relay accessors (fixed C arrays don't bridge to Swift). */
 int sync_relay_count(SyncState *s);
 const char *sync_relay_url(SyncState *s, int i);

@@ -101,18 +101,17 @@ final class LfgModel: ObservableObject {
             guard let entry, let userdata else { return }
             let model = Unmanaged<LfgModel>.fromOpaque(userdata).takeUnretainedValue()
             if entry.pointee.lfg != 0, let pubkey {
-                let name = withUnsafeBytes(of: entry.pointee.name) { buf in
-                    String(cString: buf.baseAddress!.assumingMemoryBound(to: CChar.self))
-                }
-                model.recordPubkey(name: name,
+                model.recordPubkey(name: String(cString: sync_entry_name(entry)),
                                    pubkey: String(cString: pubkey))
             }
             model.stateQueue.sync {
                 if entry.pointee.lfg != 0 {
-                    lfg_add_manual(model.state, entry.pointee.name,
-                                   entry.pointee.zone, entry.pointee.detail)
+                    lfg_add_manual(model.state,
+                                   sync_entry_name(entry),
+                                   sync_entry_zone(entry),
+                                   sync_entry_detail(entry))
                 } else {
-                    _ = lfg_remove(model.state, entry.pointee.name)
+                    _ = lfg_remove(model.state, sync_entry_name(entry))
                 }
             }
             DispatchQueue.main.async { model.refresh() }
@@ -226,17 +225,14 @@ final class LfgModel: ObservableObject {
         stateQueue.sync {
             let n = lfg_count(state)
             for i in 0..<n {
-                guard let e = lfg_get(state, i) else { continue }
-                let c2s = { (p: UnsafeRawPointer) in
-                    String(cString: p.assumingMemoryBound(to: CChar.self))
-                }
+                guard lfg_get(state, i) != nil else { continue }
                 out.append(Entry(
-                    id: withUnsafeBytes(of: e.pointee.name) { c2s($0.baseAddress!) },
-                    name: withUnsafeBytes(of: e.pointee.name) { c2s($0.baseAddress!) },
-                    zone: withUnsafeBytes(of: e.pointee.zone) { c2s($0.baseAddress!) },
-                    detail: withUnsafeBytes(of: e.pointee.detail) { c2s($0.baseAddress!) },
-                    source: e.pointee.source,
-                    lastSeen: Date(timeIntervalSince1970: TimeInterval(e.pointee.last_seen))
+                    id: String(cString: lfg_entry_name(state, i)),
+                    name: String(cString: lfg_entry_name(state, i)),
+                    zone: String(cString: lfg_entry_zone(state, i)),
+                    detail: String(cString: lfg_entry_detail(state, i)),
+                    source: lfg_entry_source(state, i),
+                    lastSeen: Date(timeIntervalSince1970: TimeInterval(lfg_entry_last_seen(state, i)))
                 ))
             }
         }
@@ -424,10 +420,7 @@ final class LfgModel: ObservableObject {
         var plain = [CChar](repeating: 0, count: 600)
         sender.withCString { sptr in
             content.withCString { cptr in
-                withUnsafeBytes(of: sp.pointee.privkey) { pk in
-                    _ = chat_try_decrypt(pk.baseAddress!.assumingMemoryBound(to: CChar.self),
-                                         sptr, cptr, &plain, plain.count)
-                }
+                _ = sync_decrypt_dm(sp, sptr, cptr, &plain, plain.count)
             }
         }
         let text = String(cString: plain)
