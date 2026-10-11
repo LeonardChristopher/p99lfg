@@ -6,75 +6,45 @@ options:
   createIntermediateGroups: true
 
 targets:
-  p99lfgCore:
-    type: library.static
-    platform: iOS
-    sources:
-      - path: ../src
-        includes: ["core.c", "sha256.c", "nostr.c", "sync.c", "ws_client.c", "aes.c", "chat.c", "fav.c", "rating.c"]
-        headerVisibility: project
-      - path: ../src
-        includes: ["core.h", "sha256.h", "nostr.h", "sync.h", "ws_client.h", "tls_hooks.h", "aes.h", "chat.h", "fav.h", "rating.h"]
-        buildPhase: headers
-      - path: src
-        includes: ["tls_apple.m"]
-      - path: ../vendor/secp256k1/src
-        includes: ["secp256k1.c", "precomputed_ecmult.c", "precomputed_ecmult_gen.c"]
-      - path: ../vendor/qrcodegen
-        includes: ["qrcodegen.c"]
-      - path: ../vendor/secp256k1/include
-        includes: ["*.h"]
-        buildPhase: headers
-    settings:
-      base:
-        GCC_C_LANGUAGE_STANDARD: c99
-        CLANG_ENABLE_MODULES: NO
-        DEFINES_MODULE: NO
-        SWIFT_OBJC_BRIDGING_HEADER: ""
-        SWIFT_VERSION: ""
-        GCC_PREPROCESSOR_DEFINITIONS:
-          - ENABLE_MODULE_SCHNORRSIG=1
-          - ENABLE_MODULE_EXTRAKEYS=1
-          - ENABLE_MODULE_ECDH=1
-        SYSTEM_HEADER_SEARCH_PATHS: ["$(inherited)"]
-        HEADER_SEARCH_PATHS:
-          - "$(PROJECT_DIR)/../src"
-          - "$(PROJECT_DIR)/../vendor/secp256k1/include"
-          - "$(PROJECT_DIR)/../vendor/secp256k1/src"
-        GCC_WARN_64_TO_32_BIT_CONVERSION: NO
-        GCC_TREAT_WARNINGS_AS_ERRORS: NO
-        CODE_SIGNING_ALLOWED: NO
-
   p99lfg:
     type: application
     platform: iOS
     sources:
       - path: src
-        excludes: ["tls_apple.m"]
+        excludes: ["p99lfg-Bridging-Header.h"]
       - path: ../src
-        includes: ["core.h", "sha256.h", "nostr.h", "sync.h", "ws_client.h", "tls_hooks.h"]
-        buildPhase: headers
-    dependencies:
-      - target: p99lfgCore
+        includes: ["core.c", "sha256.c", "nostr.c", "sync.c", "ws_client.c",
+                   "aes.c", "chat.c", "fav.c", "rating.c",
+                   "core.h", "sha256.h", "nostr.h", "sync.h", "ws_client.h",
+                   "tls_hooks.h", "aes.h", "chat.h", "fav.h", "rating.h"]
+      - path: ../vendor/secp256k1/src
+        includes: ["secp256k1.c", "precomputed_ecmult.c", "precomputed_ecmult_gen.c"]
+      - path: ../vendor/qrcodegen
+        includes: ["qrcodegen.c"]
     settings:
       base:
-        # ws_client.c references the TLS hooks as weak symbols; -ObjC forces
-        # tls_apple.o out of the static archive so the hooks are registered.
-        OTHER_LDFLAGS: ["-ObjC"]
         PRODUCT_BUNDLE_IDENTIFIER: com.p99lfg.app
         MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_NSCameraUsageDescription: "Scan the QR code shown by the Windows p99lfg app to import your Nostr identity."
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_NSCameraUsageDescription: "Scan the QR code shown by the Windows p99lfg app to import your Nostr identity."
         SWIFT_OBJC_BRIDGING_HEADER: $(PROJECT_DIR)/src/p99lfg-Bridging-Header.h
-        HEADER_SEARCH_PATHS:
-          - "$(PROJECT_DIR)/../src"
         SWIFT_VERSION: "5.0"
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGNING_REQUIRED: NO
         TARGETED_DEVICE_FAMILY: "1,2"
-        ENABLE_USER_SCRIPT_SANDBOXING: YES
         IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+        GCC_C_LANGUAGE_STANDARD: c99
+        GCC_PREPROCESSOR_DEFINITIONS:
+          - ENABLE_MODULE_SCHNORRSIG=1
+          - ENABLE_MODULE_EXTRAKEYS=1
+          - ENABLE_MODULE_ECDH=1
+        HEADER_SEARCH_PATHS:
+          - "$(PROJECT_DIR)/../src"
+          - "$(PROJECT_DIR)/../vendor/secp256k1/include"
+          - "$(PROJECT_DIR)/../vendor/secp256k1/src"
+          - "$(PROJECT_DIR)/../vendor/qrcodegen"
+        GCC_WARN_64_TO_32_BIT_CONVERSION: NO
