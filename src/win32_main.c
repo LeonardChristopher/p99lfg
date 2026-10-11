@@ -9,6 +9,7 @@
 #include <commctrl.h>
 #include <shlobj.h>
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,8 +59,22 @@ static void on_remote_event(const SyncRemoteEntry *entry, const char *pubkey, vo
 static DWORD WINAPI sync_thread(LPVOID arg)
 {
     (void)arg;
+    int round = 0;
     while (g_sync_thread_run) {
-        sync_poll(&g_sync);
+        __try {
+            sync_poll(&g_sync);
+            if (g_log) {
+                log_printf("sync poll round %d: ", round);
+                for (int i = 0; i < g_sync.nrelays; i++)
+                    log_printf("[%s connected=%d] ", g_sync.relays[i].url, g_sync.relays[i].connected);
+                log_printf("\n");
+            }
+        } __except (1) {
+            log_printf("sync poll round %d CRASHED in network code, disabling sync\n", round);
+            g_sync_thread_run = 0;
+            return 1;
+        }
+        round++;
         for (int i = 0; i < 50 && g_sync_thread_run; i++)
             Sleep(100); /* ~5s between polls */
     }
@@ -290,13 +305,53 @@ static void guess_default_dir(char *out, size_t outsz)
     snprintf(out, outsz, "%s", "C:\\Program Files (x86)\\Sony\\EverQuest");
 }
 
+static FILE *g_log;
+
+static void log_open(void)
+{
+    char path[LFG_PATH_MAX];
+    GetModuleFileNameA(NULL, path, sizeof(path));
+    char *slash = strrchr(path, '\\');
+    if (slash)
+        strcpy(slash + 1, "p99lfg.log");
+    else
+        strcat(path, ".log");
+    g_log = fopen(path, "w");
+}
+
+static void log_printf(const char *fmt, ...)
+{
+    if (!g_log)
+        return;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(g_log, fmt, ap);
+    va_end(ap);
+    fflush(g_log);
+}
+
+static LONG WINAPI crash_handler(EXCEPTION_POINTERS *ep)
+{
+    if (g_log) {
+        fprintf(g_log, "CRASH code=%08lx addr=%p\n",
+                (unsigned long)ep->ExceptionRecord->ExceptionCode,
+                ep->ExceptionRecord->ExceptionAddress);
+        fflush(g_log);
+    }
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
 {
     (void)hPrev; (void)cmd;
+    log_open();
+    log_printf("p99lfg starting\n");
+    SetUnhandledExceptionFilter(crash_handler);
     InitCommonControls();
     g_state = lfg_new();
     char dir[LFG_PATH_MAX];
     guess_default_dir(dir, sizeof(dir));
+    log_printf("log dir guess: %s\n", dir);
     lfg_set_dir(g_state, dir);
 
     /* Nostr identity lives next to the exe: p99lfg.key */
@@ -307,11 +362,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
         strcpy(slash + 1, "p99lfg.key");
     else
         strcat(keypath, ".key");
+    log_printf("key path: %s\n", keypath);
     sync_init(&g_sync, keypath, "green", on_remote_event, NULL);
+    log_printf("sync init done, pubkey=%s\n", g_sync.pubkey);
     for (int i = 0; i < (int)(sizeof(DEFAULT_RELAYS)/sizeof(DEFAULT_RELAYS[0])); i++)
         sync_add_relay(&g_sync, DEFAULT_RELAYS[i]);
-    g_sync_thread_run = 1;
-    g_sync_thread = CreateThread(NULL, 0, sync_thread, NULL, 0, NULL);
 
     WNDCLASSA wc = {0};
     wc.lpfnWndProc = WndProc;
@@ -330,8 +385,21 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
                              WS_OVERLAPPEDWINDOW,
                              CW_USEDEFAULT, CW_USEDEFAULT, 500, 420,
                              NULL, NULL, hInst, hf);
+    if (!g_hwnd) {
+        log_printf("window creation FAILED (err=%lu)\n", (unsigned long)GetLastError());
+        if (g_log)
+            fclose(g_log);
+        return 1;
+    }
+    log_printf("window created\n");
     ShowWindow(g_hwnd, show);
     UpdateWindow(g_hwnd);
+    log_printf("window shown, starting sync thread\n");
+
+    g_sync_thread_run = 1;
+    g_sync_thread = CreateThread(NULL, 0, sync_thread, NULL, 0, NULL);
+    if (!g_sync_thread)
+        log_printf("sync thread FAILED to start (err=%lu)\n", (unsigned long)GetLastError());
 
     MSG msg;
     while (GetMessageA(&msg, NULL, 0, 0)) {
