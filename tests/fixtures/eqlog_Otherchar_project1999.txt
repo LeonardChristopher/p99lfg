@@ -1,0 +1,7 @@
+[Mon Oct 10 12:00:00 2025] There are 3 players in EverQuest.
+[Mon Oct 10 12:00:10 2025] Players on EverQuest:
+[Mon Oct 10 12:00:10 2025] ---------------------------
+[Mon Oct 10 12:00:10 2025] [60 Archmage] Soandso (Dark Elf) ZONE: sebilis <LFM>
+[Mon Oct 10 12:00:10 2025] [52 Grave Lord] Myalt (Dark Elf) ZONE: eci
+[Mon Oct 10 12:00:10 2025] [45 Wizard] Zerker (Gnome) ZONE: commons <LFG>
+[Mon Oct 10 12:00:11 2025] There are 3 players in EverQuest.
