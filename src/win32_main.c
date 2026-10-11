@@ -219,7 +219,6 @@ static void create_controls(HWND hwnd, HFONT hf)
     g_st_dir = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE,
                              10, 345, 460, 20, hwnd, (HMENU)ID_ST_DIR, NULL, NULL);
 
-    EnumWindows((WNDENUMPROC)0, 0);
     HWND ctrl = GetWindow(hwnd, GW_CHILD);
     while (ctrl) {
         SendMessageA(ctrl, WM_SETFONT, (WPARAM)hf, TRUE);
