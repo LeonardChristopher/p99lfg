@@ -133,7 +133,7 @@ final class LfgModel: ObservableObject {
                 if kind == 30079 {
                     _ = rating_record(model.ratingStore, pubkey, dtag, content, createdAt)
                 } else if kind == 30080 {
-                    let agree = String(cString: content).contains("\"agree\":true") ? 1 : 0
+                    let agree: Int32 = String(cString: content).contains("\"agree\":true") ? 1 : 0
                     _ = vote_record(model.ratingStore, pubkey, dtag, agree, createdAt)
                 }
             }
