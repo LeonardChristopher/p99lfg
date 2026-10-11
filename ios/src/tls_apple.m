@@ -1,29 +1,26 @@
-/* Apple TLS hooks for ws_client using the system Security framework
- * (SecureTransport) over the raw socket fd — no OpenSSL shipping, matching
- * the SChannel approach on Windows. Compiled as Objective-C so we can use
- * SecTrustEvaluate for certificate validation. */
+/* Apple TLS hooks for ws_client using Network.framework (NWConnection),
+ * the supported TLS API on iOS/macOS — no OpenSSL shipping, matching the
+ * SChannel approach on Windows. The hooks are blocking; NWConnection is
+ * async, so each operation is bridged with a semaphore. */
 #include "tls_hooks.h"
 
 #if defined(__APPLE__) && !defined(_WIN32)
 
 #import <Foundation/Foundation.h>
-#import <Security/Security.h>
+#import <Network/Network.h>
 #import <sys/socket.h>
+#import <netinet/in.h>
 #import <unistd.h>
 
-/* SSLSetIoFuncs was removed from recent SDK headers but the symbol remains
- * available on iOS for backwards compatibility; declare it explicitly. */
-extern OSStatus SSLSetIoFuncs(SSLContextRef context,
-                              SSLReadFunc readFunc,
-                              SSLWriteFunc writeFunc) __attribute__((weak_import));
-
 struct TlsCtx {
-    int fd;
-    SSLContextRef ssl;
-    /* Decrypted record buffer */
-    unsigned char decbuf[16384];
-    size_t declen;
-    size_t dekpos;
+    nw_connection_t conn;
+    dispatch_queue_t queue;
+    dispatch_semaphore_t sem;
+    /* decrypted bytes buffered between receive callbacks */
+    unsigned char buf[65536];
+    size_t buflen;
+    size_t bufpos;
+    int eof;
 };
 
 static int tls_connect_impl(const char *host, void *sockp, TlsCtx **out);
@@ -36,41 +33,61 @@ int (*tls_send_hook)(TlsCtx *, const void *, unsigned int) = tls_send_impl;
 int (*tls_recv_hook)(TlsCtx *, void *, unsigned int) = tls_recv_impl;
 void (*tls_close_hook)(TlsCtx *) = tls_close_impl;
 
-static OSStatus tcp_write(TlsCtx *t, const void *buf, size_t len)
+/* Pull the peer port off the socket ws_client already connected, so we
+ * mirror its destination exactly. */
+static uint16_t peer_port(void *sockp)
 {
-    const char *p = buf;
-    while (len > 0) {
-        ssize_t n = write(t->fd, p, len);
-        if (n <= 0)
-            return errSSLClosedAbort;
-        p += n;
-        len -= (size_t)n;
-    }
-    return noErr;
+    int fd = (int)(intptr_t)sockp;
+    struct sockaddr_storage ss;
+    socklen_t len = sizeof(ss);
+    if (getpeername(fd, (struct sockaddr *)&ss, &len) != 0)
+        return 443;
+    if (ss.ss_family == AF_INET)
+        return ((struct sockaddr_in *)&ss)->sin_port;
+    if (ss.ss_family == AF_INET6)
+        return ((struct sockaddr_in6 *)&ss)->sin6_port;
+    return htons(443);
 }
 
-/* TLS read callback: pull bytes off the raw socket. */
-static OSStatus tls_socket_read(SSLConnectionRef conn, void *buf, size_t *len)
+static void on_state_change(nw_connection_t conn, nw_connection_state_t state, void *ctx)
 {
-    TlsCtx *t = (TlsCtx *)conn;
-    ssize_t n = read(t->fd, buf, *len);
-    if (n > 0) {
-        *len = (size_t)n;
-        return noErr;
+    TlsCtx *t = (TlsCtx *)ctx;
+    switch (state) {
+    case nw_connection_state_ready:
+    case nw_connection_state_failed:
+    case nw_connection_state_cancelled:
+        dispatch_semaphore_signal(t->sem);
+        break;
+    default:
+        break;
     }
-    if (n == 0)
-        return errSSLClosedGraceful;
-    return errSSLClosedAbort;
+    (void)conn;
 }
 
-/* TLS write callback: push bytes onto the raw socket. */
-static OSStatus tls_socket_write(SSLConnectionRef conn, const void *buf, size_t *len)
+/* Start one receive; completion buffers the data and signals. */
+static void pump_receive(TlsCtx *t)
 {
-    TlsCtx *t = (TlsCtx *)conn;
-    OSStatus st = tcp_write(t, buf, *len);
-    if (st != noErr)
-        return st;
-    return noErr;
+    nw_connection_receive(t->conn, 1, sizeof(t->buf) - t->buflen,
+                         ^(dispatch_data_t data, NWEndpoint_t endpoint,
+                           bool is_complete, NSError *error) {
+        (void)endpoint;
+        if (error) {
+            t->eof = 1;
+        } else if (data && !is_complete) {
+            const void *p = NULL;
+            size_t n = 0;
+            dispatch_data_t mapped = dispatch_data_create_map(data, &p, &n);
+            if (mapped && p && t->buflen + n <= sizeof(t->buf)) {
+                memcpy(t->buf + t->buflen, p, n);
+                t->buflen += n;
+            }
+            if (mapped)
+                nw_release(mapped);
+        } else if (is_complete) {
+            t->eof = 1;
+        }
+        dispatch_semaphore_signal(t->sem);
+    });
 }
 
 static int tls_connect_impl(const char *host, void *sockp, TlsCtx **out)
@@ -79,97 +96,112 @@ static int tls_connect_impl(const char *host, void *sockp, TlsCtx **out)
     TlsCtx *t = calloc(1, sizeof(TlsCtx));
     if (!t)
         return -1;
-    t->fd = (int)(intptr_t)sockp;
+    t->sem = dispatch_semaphore_create(0);
+    t->queue = dispatch_queue_create("p99lfg.tls", DISPATCH_QUEUE_SERIAL);
 
-    t->ssl = SSLCreateContext(NULL, kSSLClientSide, kSSLStreamType);
-    if (!t->ssl)
+    char portstr[8];
+    snprintf(portstr, sizeof(portstr), "%u", (unsigned)ntohs(peer_port(sockp)));
+    nw_endpoint_t ep = nw_endpoint_create_host(host, portstr);
+    if (!ep)
         goto fail;
 
-    SSLSetIoFuncs(t->ssl, tls_socket_read, tls_socket_write);
-    SSLSetProtocolVersionMin(t->ssl, kTLSProtocol12);
-    SSLSetSessionOption(t->ssl, kSSLSessionOptionBreakOnServerAuth, true);
-
-    /* Connection ref is the fd; hostname for SNI + default trust eval. */
-    SSLSetConnection(t->ssl, (SSLConnectionRef)(uintptr_t)t->fd);
-    SSLSetPeerDomainName(t->ssl, host, strlen(host));
-
-    OSStatus st;
-    for (;;) {
-        st = SSLHandshake(t->ssl);
-        if (st == errSSLWouldBlock)
-            continue;
-        if (st == errSSLPeerAuthCompleted) {
-            /* Evaluate the server certificate against system trust. */
-            SecTrustRef trust = NULL;
-            OSStatus tst = SSLCopyPeerTrust(t->ssl, &trust);
-            if (tst != noErr || !trust) {
-                if (trust)
-                    CFRelease(trust);
-                goto fail;
-            }
-            SecTrustResultType tres;
-            tst = SecTrustEvaluate(trust, &tres);
-            CFRelease(trust);
-            if (tst != noErr ||
-                (tres != kSecTrustResultUnspecified && tres != kSecTrustResultProceed))
-                goto fail;
-            continue;
-        }
-        break;
+    nw_parameters_t params = nw_parameters_create_secure_tcp(
+        NW_PARAMETERS_DEFAULT_PROTOCOL, NW_PARAMETERS_DEFAULT_CONFIGURATION);
+    if (!params) {
+        nw_release(ep);
+        goto fail;
     }
-    if (st != noErr)
+    /* enforce hostname validation (default policy already does) */
+    t->conn = nw_connection_create(ep, params);
+    nw_release(ep);
+    nw_release(params);
+    if (!t->conn)
+        goto fail;
+
+    nw_connection_set_state_changed_handler(t->conn, ^(nw_connection_state_t state, NSError *error) {
+        on_state_change(t->conn, state, t);
+    });
+    nw_connection_set_queue(t->conn, t->queue);
+    nw_connection_start(t->conn);
+
+    long r = dispatch_semaphore_wait(t->sem, dispatch_time(DISPATCH_TIME_NOW, 15ULL * NSEC_PER_SEC));
+    if (r != 0 || nw_connection_get_state(t->conn) != nw_connection_state_ready)
         goto fail;
 
     *out = t;
     return 0;
 fail:
-    if (t->ssl)
-        CFRelease(t->ssl);
+    if (t->conn) {
+        nw_connection_cancel(t->conn);
+        nw_release(t->conn);
+    }
+    if (t->queue)
+        dispatch_release(t->queue);
+    dispatch_release(t->sem);
     free(t);
     return -1;
 }
 
 static int tls_send_impl(TlsCtx *t, const void *data, unsigned int len)
 {
-    size_t sent = 0;
-    OSStatus st;
-    while (sent < len) {
-        st = SSLWrite(t->ssl, (const uint8_t *)data + sent, len - sent, &sent);
-        if (st != noErr)
-            return -1;
-    }
-    return 0;
+    dispatch_data_t d = dispatch_data_create(data, len, t->queue, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+    if (!d)
+        return -1;
+    __block int ok = 0;
+    nw_connection_send(t->conn, d, NW_CONNECTION_DEFAULT_MESSAGE_CONTEXT, true,
+                       ^(NSError *error) {
+        ok = error ? -1 : 0;
+        dispatch_semaphore_signal(t->sem);
+    });
+    dispatch_release(d);
+    long r = dispatch_semaphore_wait(t->sem, dispatch_time(DISPATCH_TIME_NOW, 15ULL * NSEC_PER_SEC));
+    if (r != 0)
+        return -1;
+    return ok;
 }
 
 static int tls_recv_impl(TlsCtx *t, void *data, unsigned int len)
 {
-    /* Serve buffered plaintext first. */
-    if (t->dekpos < t->declen) {
-        size_t avail = t->declen - t->dekpos;
+    /* serve buffered plaintext first */
+    if (t->bufpos < t->buflen) {
+        size_t avail = t->buflen - t->bufpos;
         size_t n = avail < len ? avail : (size_t)len;
-        memcpy(data, t->decbuf + t->dekpos, n);
-        t->dekpos += n;
-        if (t->dekpos == t->declen) {
-            t->dekpos = t->declen = 0;
+        memcpy(data, t->buf + t->bufpos, n);
+        t->bufpos += n;
+        if (t->bufpos == t->buflen) {
+            t->bufpos = t->buflen = 0;
         }
         return (int)n;
     }
-    size_t got = 0;
-    OSStatus st = SSLRead(t->ssl, data, len, &got);
-    if (got > 0)
-        return (int)got;
-    if (st == errSSLClosedGraceful)
+    if (t->eof)
         return 0;
-    return -1;
+    pump_receive(t);
+    long r = dispatch_semaphore_wait(t->sem, dispatch_time(DISPATCH_TIME_NOW, 15ULL * NSEC_PER_SEC));
+    if (r != 0)
+        return -1;
+    if (t->bufpos < t->buflen) {
+        size_t avail = t->buflen - t->bufpos;
+        size_t n = avail < len ? avail : (size_t)len;
+        memcpy(data, t->buf + t->bufpos, n);
+        t->bufpos += n;
+        if (t->bufpos == t->buflen) {
+            t->bufpos = t->buflen = 0;
+        }
+        return (int)n;
+    }
+    return t->eof ? 0 : -1;
 }
 
 static void tls_close_impl(TlsCtx *t)
 {
     if (t) {
-        if (t->ssl) {
-            SSLClose(t->ssl);
-            CFRelease(t->ssl);
+        if (t->conn) {
+            nw_connection_cancel(t->conn);
+            nw_release(t->conn);
         }
+        if (t->queue)
+            dispatch_release(t->queue);
+        dispatch_release(t->sem);
         free(t);
     }
 }
