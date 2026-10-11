@@ -7,7 +7,7 @@ options:
 
 targets:
   p99lfgCore:
-    type: staticlib
+    type: library
     platform: iOS
     sources:
       - path: ../src

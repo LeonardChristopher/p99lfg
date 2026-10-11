@@ -13,6 +13,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#define TMPDIR "C:/Users/Public"
+#else
+#define TMPDIR "/tmp"
+#endif
+
 static int fails = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); fails++; } else printf("ok: %s\n", msg); } while (0)
 
@@ -45,7 +51,7 @@ static void test_schnorr_bip340(void)
     const char *sk = "0000000000000000000000000000000000000000000000000000000000000003";
     const char *expected_pub = "F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9";
 
-    char tmpfile[] = "/tmp/p99lfg_key_testXXXXXX";
+    char tmpfile[] = TMPDIR "/p99lfg_key_testXXXXXX";
     (void)tmpfile;
     const char *path = "p99lfg_test_key.txt";
     FILE *f = fopen(path, "w");
@@ -190,7 +196,7 @@ static void test_sync_messages(void)
 static void test_key_import(void)
 {
     const char *sk = "0000000000000000000000000000000000000000000000000000000000000003";
-    const char *path = "/tmp/p99lfg_test_import.key";
+    char path[256]; snprintf(path, sizeof(path), "%s/p99lfg_test_import.key", TMPDIR);
     remove(path);
 
     char pub1[65] = {0}, pub2[65] = {0};
@@ -227,8 +233,8 @@ static void test_key_import(void)
 /* NIP-04 DM round trip: two identities, encrypt to peer, decrypt as peer. */
 static void test_chat_roundtrip(void)
 {
-    const char *alice_keyfile = "/tmp/p99lfg_test_alice.key";
-    const char *bob_keyfile = "/tmp/p99lfg_test_bob.key";
+    char alice_keyfile[256]; snprintf(alice_keyfile, sizeof(alice_keyfile), "%s/p99lfg_test_alice.key", TMPDIR);
+    char bob_keyfile[256]; snprintf(bob_keyfile, sizeof(bob_keyfile), "%s/p99lfg_test_bob.key", TMPDIR);
     remove(alice_keyfile);
     remove(bob_keyfile);
 
@@ -253,7 +259,7 @@ static void test_chat_roundtrip(void)
     CHECK(strcmp(plain, msg) == 0, "chat plaintext round trip");
 
     /* wrong key fails */
-    const char *mallory_keyfile = "/tmp/p99lfg_test_mallory.key";
+    char mallory_keyfile[256]; snprintf(mallory_keyfile, sizeof(mallory_keyfile), "%s/p99lfg_test_mallory.key", TMPDIR);
     remove(mallory_keyfile);
     char mallory_pub[65];
     nostr_identity_load(mallory_keyfile, mallory_pub);
@@ -278,7 +284,7 @@ static void test_ratings(void)
     char rater[3][65];
     for (int i = 0; i < 3; i++) {
         char path[64];
-        snprintf(path, sizeof(path), "/tmp/p99lfg_rate_r%d.key", i);
+        snprintf(path, sizeof(path), "%s/p99lfg_rate_r%d.key", TMPDIR, i);
         remove(path);
         nostr_identity_load(path, rater[i]);
         remove(path);
@@ -357,7 +363,7 @@ static void test_qr_key(void)
 /* favourites: toggle, persistence, reload */
 static void test_favourites(void)
 {
-    const char *path = "/tmp/p99lfg_test_favs.txt";
+    char path[256]; snprintf(path, sizeof(path), "%s/p99lfg_test_favs.txt", TMPDIR);
     remove(path);
 
     FavList *f = fav_load(path);
