@@ -97,8 +97,9 @@ final class LfgModel: ObservableObject {
         nostr_identity_load(keyPath, &pubkey)
         myPubkey = String(cString: pubkey)
 
-        syncState = UnsafeMutablePointer<SyncState>.allocate(capacity: 1)
-        syncState.initialize(to: SyncState())
+        let ss = UnsafeMutablePointer<SyncState>.allocate(capacity: 1)
+        ss.initialize(to: SyncState())
+        syncState = ss
 
         wrapper = CallbackWrapper { entry, pubkey, userdata in
             guard let entry, let userdata else { return }
