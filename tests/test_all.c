@@ -190,7 +190,7 @@ static void test_sync_messages(void)
 static void test_key_import(void)
 {
     const char *sk = "0000000000000000000000000000000000000000000000000000000000000003";
-    const char *path = "/tmp/p99lfg_test_import.key";
+    const char *path = "p99lfg_test_import.key";
     remove(path);
 
     char pub1[65] = {0}, pub2[65] = {0};
@@ -227,8 +227,8 @@ static void test_key_import(void)
 /* NIP-04 DM round trip: two identities, encrypt to peer, decrypt as peer. */
 static void test_chat_roundtrip(void)
 {
-    const char *alice_keyfile = "/tmp/p99lfg_test_alice.key";
-    const char *bob_keyfile = "/tmp/p99lfg_test_bob.key";
+    const char *alice_keyfile = "p99lfg_test_alice.key";
+    const char *bob_keyfile = "p99lfg_test_bob.key";
     remove(alice_keyfile);
     remove(bob_keyfile);
 
@@ -253,7 +253,7 @@ static void test_chat_roundtrip(void)
     CHECK(strcmp(plain, msg) == 0, "chat plaintext round trip");
 
     /* wrong key fails */
-    const char *mallory_keyfile = "/tmp/p99lfg_test_mallory.key";
+    const char *mallory_keyfile = "p99lfg_test_mallory.key";
     remove(mallory_keyfile);
     char mallory_pub[65];
     nostr_identity_load(mallory_keyfile, mallory_pub);
@@ -278,7 +278,7 @@ static void test_ratings(void)
     char rater[3][65];
     for (int i = 0; i < 3; i++) {
         char path[64];
-        snprintf(path, sizeof(path), "/tmp/p99lfg_rate_r%d.key", i);
+        snprintf(path, sizeof(path), "p99lfg_rate_r%d.key", i);
         remove(path);
         nostr_identity_load(path, rater[i]);
         remove(path);
@@ -357,7 +357,7 @@ static void test_qr_key(void)
 /* favourites: toggle, persistence, reload */
 static void test_favourites(void)
 {
-    const char *path = "/tmp/p99lfg_test_favs.txt";
+    const char *path = "p99lfg_test_favs.txt";
     remove(path);
 
     FavList *f = fav_load(path);
