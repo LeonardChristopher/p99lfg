@@ -18,12 +18,12 @@ jobs:
       - name: Build p99lfg.exe
         run: |
           mkdir build
-          gcc -O2 -Isrc -Ivendor/secp256k1/include -Ivendor/secp256k1/build/include src/win32_main.c src/core.c src/sha256.c src/nostr.c src/sync.c src/ws_client.c src/tls_schannel.c vendor/secp256k1/build/lib/libsecp256k1.a -lgdi32 -luser32 -lcomctl32 -lcomdlg32 -lshell32 -lole32 -lws2_32 -lcrypt32 -lsecur32 -o build/p99lfg.exe
+          gcc -O2 -DSECP256K1_STATIC -Isrc -Ivendor/secp256k1/include -Ivendor/secp256k1/build/include src/win32_main.c src/core.c src/sha256.c src/nostr.c src/sync.c src/ws_client.c src/tls_schannel.c vendor/secp256k1/build/lib/libsecp256k1.a -lgdi32 -luser32 -lcomctl32 -lcomdlg32 -lshell32 -lole32 -lws2_32 -lcrypt32 -lsecur32 -o build/p99lfg.exe
         shell: cmd
       - name: Run tests
         run: |
-          gcc -O2 -Isrc -Ivendor/secp256k1/include -Ivendor/secp256k1/build/include tests/test_all.c src/sha256.c src/nostr.c src/core.c vendor/secp256k1/build/lib/libsecp256k1.a -o build/test_all.exe
-          gcc -O2 -Isrc -Ivendor/secp256k1/include -Ivendor/secp256k1/build/include tests/test_ws.c src/ws_client.c src/sha256.c src/nostr.c vendor/secp256k1/build/lib/libsecp256k1.a -o build/test_ws.exe -lws2_32
+          gcc -O2 -DSECP256K1_STATIC -Isrc -Ivendor/secp256k1/include -Ivendor/secp256k1/build/include tests/test_all.c src/sha256.c src/nostr.c src/core.c src/sync.c src/ws_client.c vendor/secp256k1/build/lib/libsecp256k1.a -o build/test_all.exe
+          gcc -O2 -DSECP256K1_STATIC -Isrc -Ivendor/secp256k1/include -Ivendor/secp256k1/build/include tests/test_ws.c src/ws_client.c src/sha256.c src/nostr.c vendor/secp256k1/build/lib/libsecp256k1.a -o build/test_ws.exe -lws2_32
           build\test_all.exe
         shell: cmd
       - name: Upload artifact
