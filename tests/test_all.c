@@ -42,7 +42,7 @@ static void test_schnorr_bip340(void)
 
     char tmpfile[] = "/tmp/p99lfg_key_testXXXXXX";
     (void)tmpfile;
-    const char *path = "/tmp/p99lfg_test_key.txt";
+    const char *path = "p99lfg_test_key.txt";
     FILE *f = fopen(path, "w");
     fputs(sk, f);
     fputc('\n', f);
@@ -79,7 +79,7 @@ static void test_event_serialization_and_sign(void)
         sprintf(hexid + i*2, "%02x", id32[i]);
     printf("  event id: %s\n", hexid);
 
-    const char *path = "/tmp/p99lfg_test_key.txt";
+    const char *path = "p99lfg_test_key.txt";
     char key[65];
     FILE *f = fopen(path, "r");
     fscanf(f, "%64s", key);
@@ -141,7 +141,7 @@ static void json_escape_into(char *dst, size_t dstsz, const char *src)
 static void test_sync_messages(void)
 {
     SyncState st;
-    sync_init(&st, "/tmp/p99lfg_test_key.txt", "green", remote_cb, NULL);
+    sync_init(&st, "p99lfg_test_key.txt", "green", remote_cb, NULL);
     CHECK(strcmp(st.server, "green") == 0, "sync init server");
 
     const char *okmsg =

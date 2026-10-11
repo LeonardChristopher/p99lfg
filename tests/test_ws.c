@@ -1,6 +1,8 @@
 /* Loopback integration test: minimal in-process WebSocket "relay" that speaks
  * just enough NIP-01 to validate the client: handshake, REQ, EVENT publish.
  * The test relay runs on 127.0.0.1 only. */
+#ifndef _WIN32
+
 #include "nostr.h"
 #include "ws_client.h"
 
@@ -106,7 +108,7 @@ int main(void)
 
     /* publish a signed event */
     NostrEvent ev = {0};
-    const char *keypath = "/tmp/p99lfg_test_key.txt";
+    const char *keypath = "p99lfg_test_key.txt";
     char key[65], pub[NOSTR_PUBKEY_HEX];
     FILE *kf = fopen(keypath, "r");
     fscanf(kf, "%64s", key);
@@ -126,3 +128,6 @@ int main(void)
     printf("\n%s (%d failures)\n", fails ? "TESTS FAILED" : "ALL TESTS PASSED", fails);
     return fails ? 1 : 0;
 }
+#else
+int main(void) { printf("skipped on Windows\n"); return 0; }
+#endif
