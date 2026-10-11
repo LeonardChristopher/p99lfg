@@ -3,6 +3,11 @@
 #include "sha256.h"
 #include "sync.h"
 #include "ws_client.h"
+#include "aes.h"
+#include "chat.h"
+#include "fav.h"
+#include "rating.h"
+#include "qrcodegen.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -181,6 +186,198 @@ static void test_sync_messages(void)
     CHECK(ws_parse_url("wss://relay.example.com", &u) == 0 && u.use_tls, "wss parse");
 }
 
+/* Import the Windows key on a mobile device: same secret, same pubkey. */
+static void test_key_import(void)
+{
+    const char *sk = "0000000000000000000000000000000000000000000000000000000000000003";
+    const char *path = "/tmp/p99lfg_test_import.key";
+    remove(path);
+
+    char pub1[65] = {0}, pub2[65] = {0};
+    CHECK(nostr_identity_load(path, pub1) == 0, "identity load creates key");
+    char sk1[65] = {0};
+    FILE *f = fopen(path, "r");
+    fscanf(f, "%64s", sk1);
+    fclose(f);
+
+    /* importing a different key replaces the file and derives its pubkey */
+    CHECK(nostr_import_key(path, sk, pub2) == 0, "import key");
+    f = fopen(path, "r");
+    char sk2[65] = {0};
+    fscanf(f, "%64s", sk2);
+    fclose(f);
+    CHECK(strcmp(sk1, sk2) != 0, "imported key differs from generated");
+    CHECK(strcmp(sk2, sk) == 0, "file holds imported secret");
+
+    /* BIP340 vector #1 pubkey for secret 0x...03 */
+    const char *expect_pub =
+        "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9";
+    CHECK(strcmp(pub2, expect_pub) == 0, "imported key derives correct pubkey");
+
+    /* sync_reload_key picks the new identity up */
+    SyncState s;
+    sync_init(&s, path, "green", NULL, NULL);
+    CHECK(sync_reload_key(&s, path) == 0, "sync reload key");
+    CHECK(strcmp(s.pubkey, expect_pub) == 0, "sync state holds imported pubkey");
+
+    CHECK(nostr_import_key(path, "not-hex", pub2) != 0, "import rejects bad hex");
+    remove(path);
+}
+
+/* NIP-04 DM round trip: two identities, encrypt to peer, decrypt as peer. */
+static void test_chat_roundtrip(void)
+{
+    const char *alice_keyfile = "/tmp/p99lfg_test_alice.key";
+    const char *bob_keyfile = "/tmp/p99lfg_test_bob.key";
+    remove(alice_keyfile);
+    remove(bob_keyfile);
+
+    char alice_pub[65] = {0}, bob_pub[65] = {0};
+    CHECK(nostr_identity_load(alice_keyfile, alice_pub) == 0, "alice identity");
+    CHECK(nostr_identity_load(bob_keyfile, bob_pub) == 0, "bob identity");
+    char alice_sk[65] = {0}, bob_sk[65] = {0};
+    FILE *f = fopen(alice_keyfile, "r"); fscanf(f, "%64s", alice_sk); fclose(f);
+    f = fopen(bob_keyfile, "r"); fscanf(f, "%64s", bob_sk); fclose(f);
+
+    /* alice encrypts to bob */
+    char content[1200];
+    const char *msg = "hey, group up in sebilis?";
+    CHECK(chat_encrypt_content(alice_sk, bob_pub, msg, content, sizeof(content)) == 0,
+          "chat encrypt");
+    CHECK(strstr(content, "?iv=") != NULL, "chat content has iv");
+
+    /* bob decrypts from alice */
+    char plain[600];
+    CHECK(chat_try_decrypt(bob_sk, alice_pub, content, plain, sizeof(plain)) == 0,
+          "chat decrypt");
+    CHECK(strcmp(plain, msg) == 0, "chat plaintext round trip");
+
+    /* wrong key fails */
+    const char *mallory_keyfile = "/tmp/p99lfg_test_mallory.key";
+    remove(mallory_keyfile);
+    char mallory_pub[65];
+    nostr_identity_load(mallory_keyfile, mallory_pub);
+    char mallory_sk[65] = {0};
+    f = fopen(mallory_keyfile, "r"); fscanf(f, "%64s", mallory_sk); fclose(f);
+    CHECK(chat_try_decrypt(mallory_sk, alice_pub, content, plain, sizeof(plain)) != 0,
+          "chat decrypt fails for eavesdropper");
+
+    remove(alice_keyfile); remove(bob_keyfile); remove(mallory_keyfile);
+}
+
+
+
+/* Ratings: record, dedupe, aggregate, and the consensus anti-brigade rule. */
+static void test_ratings(void)
+{
+    RatingStore *rs = rating_store_new();
+
+    /* three distinct raters rate the same target pubkey */
+    const char *target =
+        "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9";
+    char rater[3][65];
+    for (int i = 0; i < 3; i++) {
+        char path[64];
+        snprintf(path, sizeof(path), "/tmp/p99lfg_rate_r%d.key", i);
+        remove(path);
+        nostr_identity_load(path, rater[i]);
+        remove(path);
+    }
+
+    CHECK(rating_record(rs, rater[0], target,
+          "{\"competent\":5,\"friendly\":5,\"listens\":5}", 1000) == 1, "rating record 1");
+    CHECK(rating_record(rs, rater[1], target,
+          "{\"competent\":4,\"friendly\":4,\"listens\":4}", 1001) == 1, "rating record 2");
+    /* replaceable: same rater re-rates -> overwrite not duplicate */
+    CHECK(rating_record(rs, rater[0], target,
+          "{\"competent\":3,\"friendly\":3,\"listens\":3}", 2000) == 1, "rating re-rate");
+    CHECK(rs->count == 2, "ratings deduped per rater/target");
+
+    int c, f, l, n;
+    CHECK(rating_summary(rs, target, &c, &f, &l, &n) == 0, "summary computed");
+    CHECK(n == 2, "summary counts visible ratings");
+    CHECK(c == 3 || c == 4, "summary average in range");
+
+    /* make rater[2] active by having them rate a different target */
+    const char *other =
+        "eff69ef2b1bd93a66ed7ef4709410101b1d0cba4c853a3ca3c8ad332f4f8f3b2";
+    CHECK(rating_record(rs, rater[2], other,
+          "{\"competent\":4,\"friendly\":4,\"listens\":4}", 1500) == 1,
+          "rating record 3 (activates rater 2)");
+
+    /* consensus: two active raters disagree with rater[1]'s rating -> hidden */
+    rating_store_finalize(rs);
+    const Rating *r1 = NULL;
+    for (int i = 0; i < rs->count; i++)
+        if (strcmp(rs->ratings[i].rater, rater[1]) == 0 &&
+            strcmp(rs->ratings[i].target, target) == 0)
+            r1 = &rs->ratings[i];
+    CHECK(r1 != NULL, "rater found");
+
+    CHECK(vote_record(rs, rater[0], r1->id, 0, 3000) == 1, "disagree vote 1");
+    CHECK(vote_record(rs, rater[2], r1->id, 0, 3001) == 1, "disagree vote 2");
+    rating_store_finalize(rs);
+    CHECK(rating_is_hidden(rs, r1) == 1, "brigaded rating hidden by consensus");
+
+    /* hidden rating drops out of the summary */
+    CHECK(rating_summary(rs, target, &c, &f, &l, &n) == 0, "summary after hiding");
+    CHECK(n == 1, "hidden rating excluded from summary");
+
+    /* fresh keys that never rated anyone cannot brigade */
+    RatingStore *rs2 = rating_store_new();
+    CHECK(rating_record(rs2, rater[0], target,
+          "{\"competent\":5,\"friendly\":5,\"listens\":5}", 1000) == 1, "fresh store rating");
+    rating_store_finalize(rs2);
+    const Rating *fr = &rs2->ratings[0];
+    char anon1[65] = "1111111111111111111111111111111111111111111111111111111111111111";
+    char anon2[65] = "2222222222222222222222222222222222222222222222222222222222222222";
+    vote_record(rs2, anon1, fr->id, 0, 3000);
+    vote_record(rs2, anon2, fr->id, 0, 3001);
+    rating_store_finalize(rs2);
+    CHECK(rating_is_hidden(rs2, fr) == 0, "inactive keys cannot brigade");
+
+    rating_store_free(rs);
+    rating_store_free(rs2);
+}
+
+/* QR payload encodes a 64-hex key (Windows shows it, phones scan it). */
+static void test_qr_key(void)
+{
+    /* via win32_qr.c is GDI-bound; test the vendored encoder directly */
+    uint8_t qrcode[qrcodegen_BUFFER_LEN_MAX];
+    uint8_t temp[qrcodegen_BUFFER_LEN_MAX];
+    const char *key = "0000000000000000000000000000000000000000000000000000000000000003";
+    bool ok = qrcodegen_encodeText(key, temp, qrcode, qrcodegen_Ecc_MEDIUM,
+                                   qrcodegen_VERSION_MIN, qrcodegen_VERSION_MAX,
+                                   qrcodegen_Mask_AUTO, true);
+    CHECK(ok, "qr encode 64-hex key");
+    CHECK(qrcodegen_getSize(qrcode) > 21, "qr has modules");
+}
+
+/* favourites: toggle, persistence, reload */
+static void test_favourites(void)
+{
+    const char *path = "/tmp/p99lfg_test_favs.txt";
+    remove(path);
+
+    FavList *f = fav_load(path);
+    CHECK(f && fav_count(f) == 0, "fav starts empty");
+    CHECK(fav_toggle(f, "Soandso") == 0, "fav add");
+    CHECK(fav_has(f, "Soandso"), "fav has after add");
+    CHECK(fav_toggle(f, "Other") == 0, "fav add second");
+    CHECK(fav_count(f) == 2, "fav count 2");
+    CHECK(fav_toggle(f, "Soandso") == 0, "fav remove");
+    CHECK(!fav_has(f, "Soandso"), "fav removed");
+    fav_free(f);
+
+    /* persistence */
+    f = fav_load(path);
+    CHECK(f && fav_count(f) == 1, "fav persisted");
+    CHECK(fav_has(f, "Other"), "fav persisted content");
+    fav_free(f);
+    remove(path);
+}
+
 int main(void)
 {
     test_sha256_vectors();
@@ -188,6 +385,11 @@ int main(void)
     test_event_serialization_and_sign();
     test_core_parser();
     test_sync_messages();
+    test_key_import();
+    test_favourites();
+    test_qr_key();
+    test_chat_roundtrip();
+    test_ratings();
     printf("\n%s (%d failures)\n", fails ? "TESTS FAILED" : "ALL TESTS PASSED", fails);
     return fails ? 1 : 0;
 }

@@ -3,6 +3,10 @@
  */
 #include "core.h"
 #include "sync.h"
+#include "chat.h"
+#include "fav.h"
+#include "rating.h"
+#include "qrcodegen.h"
 
 #include <windows.h>
 #include <commdlg.h>
@@ -33,6 +37,29 @@ static UINT g_timer;
 static SyncState g_sync;
 static int g_sync_thread_run;
 static HANDLE g_sync_thread;
+static FavList *g_favs;
+static RatingStore *g_ratings;
+static char g_keypath[LFG_PATH_MAX];
+
+/* last DM per sender pubkey: simple single-conversation chat window */
+#define CHAT_LOG_MAX 4096
+static char g_chat_with[NOSTR_PUBKEY_HEX];
+static char g_chat_name[64];
+static char g_chat_log[CHAT_LOG_MAX];
+static HWND g_chat_wnd, g_chat_edit, g_chat_input;
+
+#define WM_DMARRIVED (WM_USER + 3)
+
+#define ID_BTN_FAV 110
+#define ID_BTN_RATE 111
+#define ID_BTN_CHAT 112
+#define ID_BTN_QR 113
+#define ID_RATE_DLG 200
+#define ID_RATE_OK 201
+#define ID_RATE_CANCEL 202
+#define ID_CHAT_SEND 210
+#define ID_CHAT_INPUT 211
+#define ID_CHAT_LOG 212
 
 static FILE *g_log;
 
@@ -96,6 +123,49 @@ static void on_remote_event(const SyncRemoteEntry *entry, const char *pubkey, vo
     PostMessageA(g_hwnd, WM_REMOTE, 0, 0);
 }
 
+static void on_dm(const char *sender_pubkey, const char *content, void *ud)
+{
+    (void)ud;
+    if (!g_hwnd)
+        return;
+    char plain[1024];
+    if (chat_try_decrypt(g_sync.privkey, sender_pubkey, content, plain, sizeof(plain)) != 0)
+        return;
+    /* if no conversation open, start one with this sender */
+    if (!g_chat_with[0]) {
+        snprintf(g_chat_with, sizeof(g_chat_with), "%s", sender_pubkey);
+        snprintf(g_chat_name, sizeof(g_chat_name), "%.12s", sender_pubkey);
+        const LfgEntry *e = NULL;
+        for (int i = 0; i < lfg_count(g_state); i++) {
+            e = lfg_get(g_state, i);
+            break;
+        }
+        (void)e;
+    }
+    if (strcmp(g_chat_with, sender_pubkey) != 0)
+        return; /* DM from someone else while chatting: ignore for now */
+    strncat(g_chat_log, "Them: ", sizeof(g_chat_log) - strlen(g_chat_log) - 1);
+    strncat(g_chat_log, plain, sizeof(g_chat_log) - strlen(g_chat_log) - 1);
+    strncat(g_chat_log, "\r\n", sizeof(g_chat_log) - strlen(g_chat_log) - 1);
+    PostMessageA(g_hwnd, WM_DMARRIVED, 0, 0);
+}
+
+static void on_generic(int kind, const char *pubkey, const char *dtag,
+                       const char *content, uint64_t created_at, void *ud)
+{
+    (void)ud;
+    if (!g_ratings)
+        return;
+    if (kind == 30079) {
+        rating_record(g_ratings, pubkey, dtag, content, created_at);
+        rating_store_finalize(g_ratings);
+    } else if (kind == 30080) {
+        int agree = strstr(content, "\"agree\":true") != NULL;
+        vote_record(g_ratings, pubkey, dtag, agree, created_at);
+        rating_store_finalize(g_ratings);
+    }
+}
+
 static DWORD WINAPI sync_thread(LPVOID arg)
 {
     (void)arg;
@@ -125,8 +195,33 @@ static void refresh_dir_label(HWND hwnd)
 static void populate_list(void)
 {
     SendMessageA(g_list, LB_RESETCONTENT, 0, 0);
+    if (g_favs && fav_count(g_favs) > 0) {
+        SendMessageA(g_list, LB_ADDSTRING, 0, (LPARAM)"--- Favourites ---");
+        for (int i = 0; i < fav_count(g_favs); i++) {
+            const char *name = fav_get(g_favs, i);
+            const LfgEntry *e = NULL;
+            for (int j = 0; j < lfg_count(g_state); j++) {
+                const LfgEntry *c = lfg_get(g_state, j);
+                if (strcmp(c->name, name) == 0) {
+                    e = c;
+                    break;
+                }
+            }
+            char row[256];
+            if (e)
+                snprintf(row, sizeof(row), "* %s  [%s]  %s",
+                         e->name, e->detail[0] ? e->detail : "?",
+                         e->zone[0] ? e->zone : "-");
+            else
+                snprintf(row, sizeof(row), "* %s  (offline)", name);
+            SendMessageA(g_list, LB_ADDSTRING, 0, (LPARAM)row);
+        }
+        SendMessageA(g_list, LB_ADDSTRING, 0, (LPARAM)"--- All LFG ---");
+    }
     for (int i = 0; i < lfg_count(g_state); i++) {
         const LfgEntry *e = lfg_get(g_state, i);
+        if (g_favs && fav_has(g_favs, e->name))
+            continue;
         char row[256];
         snprintf(row, sizeof(row), "%s  [%s]  %s%s%s",
                  e->name,
@@ -221,14 +316,228 @@ static void create_controls(HWND hwnd, HFONT hf)
                   WS_CHILD | WS_VISIBLE, 310, 310, 80, 24, hwnd, (HMENU)ID_BTN_ADD, NULL, NULL);
     CreateWindowA("BUTTON", "Remove",
                   WS_CHILD | WS_VISIBLE, 395, 310, 75, 24, hwnd, (HMENU)ID_BTN_REMOVE, NULL, NULL);
+    CreateWindowA("BUTTON", "Fav",
+                  WS_CHILD | WS_VISIBLE, 10, 340, 45, 22, hwnd, (HMENU)ID_BTN_FAV, NULL, NULL);
+    CreateWindowA("BUTTON", "Rate",
+                  WS_CHILD | WS_VISIBLE, 60, 340, 45, 22, hwnd, (HMENU)ID_BTN_RATE, NULL, NULL);
+    CreateWindowA("BUTTON", "Chat",
+                  WS_CHILD | WS_VISIBLE, 110, 340, 45, 22, hwnd, (HMENU)ID_BTN_CHAT, NULL, NULL);
+    CreateWindowA("BUTTON", "Show key QR",
+                  WS_CHILD | WS_VISIBLE, 160, 340, 90, 22, hwnd, (HMENU)ID_BTN_QR, NULL, NULL);
     g_st_dir = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE,
-                             10, 345, 460, 20, hwnd, (HMENU)ID_ST_DIR, NULL, NULL);
+                             10, 368, 460, 20, hwnd, (HMENU)ID_ST_DIR, NULL, NULL);
 
     HWND ctrl = GetWindow(hwnd, GW_CHILD);
     while (ctrl) {
         SendMessageA(ctrl, WM_SETFONT, (WPARAM)hf, TRUE);
         ctrl = GetWindow(ctrl, GW_HWNDNEXT);
     }
+}
+
+/* ---- favourites ---- */
+static void on_fav_toggle(void)
+{
+    LRESULT sel = SendMessageA(g_list, LB_GETCURSEL, 0, 0);
+    if (sel == LB_ERR || !g_favs)
+        return;
+    char buf[256] = {0};
+    SendMessageA(g_list, LB_GETTEXT, (WPARAM)sel, (LPARAM)buf);
+    char *name = buf;
+    if (strncmp(name, "* ", 2) == 0)
+        name += 2;
+    else if (strncmp(name, "---", 3) == 0)
+        return;
+    char *sp = strchr(name, ' ');
+    if (sp)
+        *sp = '\0';
+    fav_toggle(g_favs, name);
+    populate_list();
+}
+
+/* ---- ratings ---- */
+typedef struct {
+    HWND competent, friendly, listens;
+} RateDlgState;
+
+static RateDlgState g_rate;
+static char g_rate_target[NOSTR_PUBKEY_HEX];
+
+
+static void on_rate(void)
+{
+    LRESULT sel = SendMessageA(g_list, LB_GETCURSEL, 0, 0);
+    if (sel == LB_ERR)
+        return;
+    char buf[256] = {0};
+    SendMessageA(g_list, LB_GETTEXT, (WPARAM)sel, (LPARAM)buf);
+    char *name = buf;
+    if (strncmp(name, "* ", 2) == 0)
+        name += 2;
+    if (strncmp(name, "---", 3) == 0)
+        return;
+    char *sp = strchr(name, ' ');
+    if (sp)
+        *sp = '\0';
+    snprintf(g_rate_target, sizeof(g_rate_target), "%s", name);
+
+    WNDCLASSA wc = {0};
+    wc.lpfnWndProc = rate_wnd_proc;
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = "p99lfg_rate";
+    RegisterClassA(&wc);
+    RECT pr;
+    GetWindowRect(g_hwnd, &pr);
+    HWND dlg = CreateWindowExA(WS_EX_DLGMODALFRAME, "p99lfg_rate", "Rate player",
+                              WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+                              pr.left + 160, pr.top + 120, 230, 190,
+                              g_hwnd, NULL, NULL, NULL);
+    CreateWindowA("STATIC", "Competent (1-5):", WS_CHILD | WS_VISIBLE,
+                 10, 14, 100, 20, dlg, NULL, NULL, NULL);
+    g_rate.competent = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "3",
+                 WS_CHILD | WS_VISIBLE | ES_NUMBER, 115, 12, 30, 22, dlg, NULL, NULL, NULL);
+    CreateWindowA("STATIC", "Friendly (1-5):", WS_CHILD | WS_VISIBLE,
+                 10, 44, 100, 20, dlg, NULL, NULL, NULL);
+    g_rate.friendly = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "3",
+                 WS_CHILD | WS_VISIBLE | ES_NUMBER, 115, 42, 30, 22, dlg, NULL, NULL, NULL);
+    CreateWindowA("STATIC", "Listens (1-5):", WS_CHILD | WS_VISIBLE,
+                 10, 74, 100, 20, dlg, NULL, NULL, NULL);
+    g_rate.listens = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "3",
+                 WS_CHILD | WS_VISIBLE | ES_NUMBER, 115, 72, 30, 22, dlg, NULL, NULL, NULL);
+    CreateWindowA("BUTTON", "Submit", WS_CHILD | WS_VISIBLE,
+                 30, 110, 70, 24, dlg, (HMENU)ID_RATE_OK, NULL, NULL);
+    CreateWindowA("BUTTON", "Cancel", WS_CHILD | WS_VISIBLE,
+                 110, 110, 70, 24, dlg, (HMENU)ID_RATE_CANCEL, NULL, NULL);
+    HFONT hf = (HFONT)SendMessageA(g_hwnd, WM_GETFONT, 0, 0);
+    HWND c = GetWindow(dlg, GW_CHILD);
+    while (c) {
+        SendMessageA(c, WM_SETFONT, (WPARAM)hf, TRUE);
+        c = GetWindow(c, GW_HWNDNEXT);
+    }
+    ShowWindow(dlg, SW_SHOW);
+}
+
+/* ---- chat ---- */
+static void chat_refresh(void)
+{
+    if (g_chat_edit)
+        SetWindowTextA(g_chat_edit, g_chat_log);
+}
+
+static LRESULT CALLBACK chat_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == WM_COMMAND && LOWORD(wp) == ID_CHAT_SEND && lp) {
+        if (((HWND)lp) == GetDlgItemA(dlg, ID_CHAT_SEND)) {
+            char m[512];
+            GetWindowTextA(g_chat_input, m, sizeof(m));
+            if (m[0] && g_chat_with[0]) {
+                if (chat_send_message(&g_sync, g_chat_with, m) == 0) {
+                    strncat(g_chat_log, "You: ", sizeof(g_chat_log) - strlen(g_chat_log) - 1);
+                    strncat(g_chat_log, m, sizeof(g_chat_log) - strlen(g_chat_log) - 1);
+                    strncat(g_chat_log, "\r\n", sizeof(g_chat_log) - strlen(g_chat_log) - 1);
+                    SetWindowTextA(g_chat_input, "");
+                    chat_refresh();
+                } else {
+                    MessageBoxA(dlg, "Send failed (no relay reachable).", "p99lfg",
+                                MB_ICONINFORMATION);
+                }
+            } else if (!g_chat_with[0]) {
+                MessageBoxA(dlg,
+                    "No conversation yet. You can chat once someone DMs you, or after\n"
+                    "identity sharing is configured between both apps.",
+                    "p99lfg", MB_ICONINFORMATION);
+            }
+        }
+        return 0;
+    }
+    if (msg == WM_DMARRIVED)
+        chat_refresh();
+    return DefWindowProcA(dlg, msg, wp, lp);
+}
+
+static void on_chat(void)
+{
+    WNDCLASSA wc = {0};
+    wc.lpfnWndProc = chat_wnd_proc;
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = "p99lfg_chat";
+    RegisterClassA(&wc);
+    RECT pr;
+    GetWindowRect(g_hwnd, &pr);
+    char title[96];
+    snprintf(title, sizeof(title), "Chat with %s",
+             g_chat_name[0] ? g_chat_name : "(nobody yet)");
+    HWND dlg = CreateWindowExA(0, "p99lfg_chat", title,
+                              WS_OVERLAPPEDWINDOW,
+                              pr.left + 80, pr.top + 60, 420, 340,
+                              g_hwnd, NULL, NULL, NULL);
+    g_chat_edit = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
+                 WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | WS_VSCROLL,
+                 10, 10, 380, 220, dlg, (HMENU)ID_CHAT_LOG, NULL, NULL);
+    g_chat_input = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
+                 WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                 10, 240, 300, 24, dlg, (HMENU)ID_CHAT_INPUT, NULL, NULL);
+    CreateWindowA("BUTTON", "Send", WS_CHILD | WS_VISIBLE,
+                 315, 238, 75, 26, dlg, (HMENU)ID_CHAT_SEND, NULL, NULL);
+    HFONT hf = (HFONT)SendMessageA(g_hwnd, WM_GETFONT, 0, 0);
+    HWND c = GetWindow(dlg, GW_CHILD);
+    while (c) {
+        SendMessageA(c, WM_SETFONT, (WPARAM)hf, TRUE);
+        c = GetWindow(c, GW_HWNDNEXT);
+    }
+    ShowWindow(dlg, SW_SHOW);
+    chat_refresh();
+    SetFocus(g_chat_input);
+}
+
+/* ---- QR identity ---- */
+static void on_show_qr(void)
+{
+    if (!g_sync.privkey[0]) {
+        MessageBoxA(g_hwnd, "No key available.", "p99lfg", MB_ICONINFORMATION);
+        return;
+    }
+    uint8_t qr[qrcodegen_BUFFER_LEN_MAX];
+    uint8_t tmp[qrcodegen_BUFFER_LEN_MAX];
+    if (!qrcodegen_encode_text(g_sync.privkey, tmp, qr, qrcodegen_Ecc_MEDIUM,
+                               qrcodegen_VERSION_MIN, qrcodegen_VERSION_MAX,
+                               qrcodegen_Mask_AUTO, true)) {
+        MessageBoxA(g_hwnd, "Could not encode key as QR.", "p99lfg", MB_ICONINFORMATION);
+        return;
+    }
+    int size = qrcodegen_getSize(qr);
+    int scale = 6, px = size * scale;
+    HDC sdc = GetDC(NULL);
+    HDC mdc = CreateCompatibleDC(sdc);
+    HBITMAP bm = CreateCompatibleBitmap(sdc, px, px);
+    SelectObject(mdc, bm);
+    for (int y = 0; y < px; y++)
+        for (int x = 0; x < px; x++) {
+            BOOL dark = qrcodegen_getModule(qr, x / scale, y / scale);
+            SetPixel(mdc, x, y, dark ? RGB(0, 0, 0) : RGB(255, 255, 255));
+        }
+    BITMAP bmpinfo;
+    GetObjectA(bm, sizeof(bmpinfo), &bmpinfo);
+    /* render into a simple always-on-top popup via clipboard-free preview window */
+    HWND w = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, "STATIC", NULL,
+                             WS_POPUP | WS_VISIBLE,
+                             100, 100, px + 20, px + 40, NULL, NULL, NULL, NULL);
+    /* draw bitmap on paint */
+    SendMessageA(w, WM_SETTEXT, 0, (LPARAM)"p99lfg identity - scan with the iOS app");
+    HDC wdc = GetDC(w);
+    HDC bdc = CreateCompatibleDC(wdc);
+    SelectObject(bdc, bm);
+    BitBlt(wdc, 10, 10, px, px, bdc, 0, 0, SRCCOPY);
+    ReleaseDC(w, wdc);
+    DeleteDC(bdc);
+    DeleteObject(bm);
+    DeleteDC(mdc);
+    ReleaseDC(NULL, sdc);
+    (void)bmpinfo;
+    MessageBoxA(g_hwnd, "QR is displayed in the popup window.\nClose the message box to dismiss it.",
+                "p99lfg key QR", MB_OK);
+    DestroyWindow(w);
 }
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -248,12 +557,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_REMOTE:
         populate_list();
         return 0;
+    case WM_DMARRIVED:
+        chat_refresh();
+        return 0;
     case WM_COMMAND:
         switch (LOWORD(wp)) {
         case ID_BTN_REFRESH: do_poll(); return 0;
         case ID_BTN_DIR: on_pick_dir(hwnd); return 0;
         case ID_BTN_ADD: on_add(); return 0;
         case ID_BTN_REMOVE: on_remove(); return 0;
+        case ID_BTN_FAV: on_fav_toggle(); return 0;
+        case ID_BTN_RATE: on_rate(); return 0;
+        case ID_BTN_CHAT: on_chat(); return 0;
+        case ID_BTN_QR: on_show_qr(); return 0;
         }
         break;
     case WM_DESTROY:
@@ -364,8 +680,20 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     log_printf("key path: %s\n", keypath);
     sync_init(&g_sync, keypath, "green", on_remote_event, NULL);
     log_printf("sync init done, pubkey=%s\n", g_sync.pubkey);
+    sync_set_dm_callback(&g_sync, on_dm, NULL);
+    sync_set_generic_callback(&g_sync, on_generic, NULL);
     for (int i = 0; i < (int)(sizeof(DEFAULT_RELAYS)/sizeof(DEFAULT_RELAYS[0])); i++)
         sync_add_relay(&g_sync, DEFAULT_RELAYS[i]);
+
+    /* favourites + ratings stores next to the exe */
+    char favpath[LFG_PATH_MAX];
+    GetModuleFileNameA(NULL, favpath, sizeof(favpath));
+    char *fsl = strrchr(favpath, '\\');
+    if (fsl)
+        strcpy(fsl + 1, "p99lfg.favs");
+    g_favs = fav_load(favpath);
+    g_ratings = rating_store_new();
+    strcpy(g_keypath, keypath);
 
     WNDCLASSA wc = {0};
     wc.lpfnWndProc = WndProc;
@@ -382,7 +710,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
 
     g_hwnd = CreateWindowExA(0, "p99lfg", "p99lfg - Project 1999 LFG",
                              WS_OVERLAPPEDWINDOW,
-                             CW_USEDEFAULT, CW_USEDEFAULT, 500, 420,
+                             CW_USEDEFAULT, CW_USEDEFAULT, 500, 445,
                              NULL, NULL, hInst, hf);
     if (!g_hwnd) {
         log_printf("window creation FAILED (err=%lu)\n", (unsigned long)GetLastError());

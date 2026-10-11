@@ -23,10 +23,17 @@ typedef struct {
     char content[512];
     char sig[NOSTR_SIG_HEX];
     char dtag[128];
+    /* kind-4 DM only: recipient pubkey tag ("p"). Empty for LFG events. */
+    char ptag[NOSTR_PUBKEY_HEX];
 } NostrEvent;
 
 /* Load or create identity key at path (hex secp256k1 secret key). Returns 0 on success. */
 int nostr_identity_load(const char *path, char pubkey_out[NOSTR_PUBKEY_HEX]);
+
+/* Import an existing hex secret key (e.g. from the Windows app) and persist
+ * it at path. Returns 0 on success. */
+int nostr_import_key(const char *path, const char *privkey_hex,
+                     char pubkey_out[NOSTR_PUBKEY_HEX]);
 
 /* Serialize the canonical NIP-01 payload used for the event id. */
 void nostr_serialize_for_id(const NostrEvent *ev, char *out, size_t outsz);
