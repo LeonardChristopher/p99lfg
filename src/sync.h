@@ -30,6 +30,7 @@ typedef struct {
     char zone[64];
     char detail[96];
     int lfg;
+    uint64_t created_at; /* from the event, 0 if unknown */
 } SyncRemoteEntry;
 
 /* Callback when a remote player's LFG event arrives. */
@@ -54,7 +55,6 @@ typedef struct {
 
 void sync_init(SyncState *s, const char *keyfile_path, const char *server,
                SyncOnEvent cb, void *userdata);
-void sync_set_server(SyncState *s, const char *server);
 void sync_add_relay(SyncState *s, const char *url);
 
 /* Reload the identity (privkey+pubkey) from the key file, e.g. after
@@ -80,21 +80,7 @@ int sync_send_event(SyncState *s, const char *msg);
 
 
 /* Set the DM callback (may be NULL). */
-void sync_set_dm_callback(SyncState *s, SyncOnDm cb, void *userdata);
-void sync_set_generic_callback(SyncState *s, SyncOnGeneric cb, void *userdata);
-
-/* Remote entry field accessors for Swift. */
-const char *sync_entry_name(const SyncRemoteEntry *e);
-const char *sync_entry_zone(const SyncRemoteEntry *e);
-const char *sync_entry_detail(const SyncRemoteEntry *e);
-
-/* Decrypt a DM using the state's own privkey (avoids array bridging). */
-int sync_decrypt_dm(SyncState *s, const char *sender, const char *content,
-                    char *out, size_t outsz);
-
-/* Relay accessors (fixed C arrays don't bridge to Swift). */
-int sync_relay_count(SyncState *s);
-const char *sync_relay_url(SyncState *s, int i);
-int sync_relay_connected(SyncState *s, int i);
+#define sync_set_dm_callback(s, cb, ud) do { (s)->on_dm = (cb); (s)->dm_userdata = (ud); } while (0)
+#define sync_set_generic_callback(s, cb, ud) do { (s)->on_generic = (cb); (s)->generic_userdata = (ud); } while (0)
 
 #endif

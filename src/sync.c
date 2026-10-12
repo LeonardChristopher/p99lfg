@@ -1,5 +1,4 @@
 #include "sync.h"
-#include "chat.h"
 #include "ws_client.h"
 
 #include <stdio.h>
@@ -82,42 +81,6 @@ int sync_reload_key(SyncState *s, const char *keyfile_path)
     snprintf(s->privkey, sizeof(s->privkey), "%s", hex);
     snprintf(s->pubkey, sizeof(s->pubkey), "%s", pubkey);
     return 0;
-}
-
-void sync_set_dm_callback(SyncState *s, SyncOnDm cb, void *userdata)
-{
-    s->on_dm = cb;
-    s->dm_userdata = userdata;
-}
-
-void sync_set_generic_callback(SyncState *s, SyncOnGeneric cb, void *userdata)
-{
-    s->on_generic = cb;
-    s->generic_userdata = userdata;
-}
-
-int sync_relay_count(SyncState *s)
-{
-    return s->nrelays;
-}
-
-const char *sync_relay_url(SyncState *s, int i)
-{
-    if (i < 0 || i >= s->nrelays)
-        return NULL;
-    return s->relays[i].url;
-}
-
-int sync_relay_connected(SyncState *s, int i)
-{
-    if (i < 0 || i >= s->nrelays)
-        return 0;
-    return s->relays[i].connected;
-}
-
-void sync_set_server(SyncState *s, const char *server)
-{
-    snprintf(s->server, sizeof(s->server), "%s", server ? server : "green");
 }
 
 void sync_add_relay(SyncState *s, const char *url)
@@ -275,7 +238,17 @@ int sync_handle_message(SyncState *s, const char *msg)
     json_get_string(content, "zone", e.zone, sizeof(e.zone));
     json_get_string(content, "detail", e.detail, sizeof(e.detail));
     e.lfg = json_get_bool(content, "lfg", 1);
-
+    {
+        char nums[24] = {0};
+        const char *cp = strstr(evobj, "\"created_at\":");
+        if (cp) {
+            cp += 14;
+            size_t ni = 0;
+            while (*cp >= '0' && *cp <= '9' && ni < sizeof(nums) - 1)
+                nums[ni++] = *cp++;
+            e.created_at = strtoull(nums, NULL, 10);
+        }
+    }
     if (s->on_event)
         s->on_event(&e, pubkey, s->userdata);
     return 1;
@@ -309,14 +282,4 @@ void sync_poll(SyncState *s)
         }
         ws_close(&c);
     }
-}
-
-const char *sync_entry_name(const SyncRemoteEntry *e) { return e ? e->name : NULL; }
-const char *sync_entry_zone(const SyncRemoteEntry *e) { return e ? e->zone : NULL; }
-const char *sync_entry_detail(const SyncRemoteEntry *e) { return e ? e->detail : NULL; }
-
-int sync_decrypt_dm(SyncState *s, const char *sender, const char *content,
-                    char *out, size_t outsz)
-{
-    return chat_try_decrypt(s->privkey, sender, content, out, outsz);
 }
