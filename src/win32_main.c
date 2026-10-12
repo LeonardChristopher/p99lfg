@@ -64,11 +64,6 @@ typedef struct {
 static PresenceEntry g_presence[PRESENCE_MAX];
 static int g_npresence;
 
-static void presence_touch(const char *name, uint64_t when)
-{
-    presence_touch_key(name, NULL, when);
-}
-
 static void presence_touch_key(const char *name, const char *pubkey, uint64_t when)
 {
     if (!name[0])
@@ -97,6 +92,11 @@ static const char *presence_pubkey(const char *name)
         if (strcmp(g_presence[i].name, name) == 0)
             return g_presence[i].pubkey;
     return "";
+}
+
+static void presence_touch(const char *name, uint64_t when)
+{
+    presence_touch_key(name, NULL, when);
 }
 
 static const char *presence_mark(const char *name)
