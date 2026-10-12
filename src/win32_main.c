@@ -57,6 +57,7 @@ static HWND g_chat_wnd, g_chat_edit, g_chat_input;
 
 typedef struct {
     char name[64];
+    char pubkey[NOSTR_PUBKEY_HEX];
     uint64_t last_seen;
 } PresenceEntry;
 
@@ -65,20 +66,37 @@ static int g_npresence;
 
 static void presence_touch(const char *name, uint64_t when)
 {
+    presence_touch_key(name, NULL, when);
+}
+
+static void presence_touch_key(const char *name, const char *pubkey, uint64_t when)
+{
     if (!name[0])
         return;
     for (int i = 0; i < g_npresence; i++) {
         if (strcmp(g_presence[i].name, name) == 0) {
             if (when > g_presence[i].last_seen)
                 g_presence[i].last_seen = when;
+            if (pubkey && pubkey[0])
+                snprintf(g_presence[i].pubkey, NOSTR_PUBKEY_HEX, "%s", pubkey);
             return;
         }
     }
     if (g_npresence >= PRESENCE_MAX)
         return;
     snprintf(g_presence[g_npresence].name, 64, "%s", name);
+    snprintf(g_presence[g_npresence].pubkey, NOSTR_PUBKEY_HEX, "%s",
+             pubkey ? pubkey : "");
     g_presence[g_npresence].last_seen = when;
     g_npresence++;
+}
+
+static const char *presence_pubkey(const char *name)
+{
+    for (int i = 0; i < g_npresence; i++)
+        if (strcmp(g_presence[i].name, name) == 0)
+            return g_presence[i].pubkey;
+    return "";
 }
 
 static const char *presence_mark(const char *name)
@@ -166,8 +184,9 @@ static void on_remote_event(const SyncRemoteEntry *entry, const char *pubkey, vo
     if (!g_hwnd)
         return;
     upsert_remote(entry);
-    presence_touch(entry->name, entry->created_at ? entry->created_at
-                                                   : (uint64_t)time(NULL));
+    presence_touch_key(entry->name, pubkey,
+                       entry->created_at ? entry->created_at
+                                         : (uint64_t)time(NULL));
     PostMessageA(g_hwnd, WM_REMOTE, 0, 0);
 }
 
@@ -179,19 +198,33 @@ static void on_dm(const char *sender_pubkey, const char *content, void *ud)
     char plain[1024];
     if (chat_try_decrypt(g_sync.privkey, sender_pubkey, content, plain, sizeof(plain)) != 0)
         return;
-    /* if no conversation open, start one with this sender */
-    if (!g_chat_with[0]) {
-        snprintf(g_chat_with, sizeof(g_chat_with), "%s", sender_pubkey);
-        snprintf(g_chat_name, sizeof(g_chat_name), "%.12s", sender_pubkey);
-        const LfgEntry *e = NULL;
-        for (int i = 0; i < lfg_count(g_state); i++) {
-            e = lfg_get(g_state, i);
+    /* find the sender's display name from the roster */
+    char sender_name[64] = "";
+    for (int i = 0; i < g_npresence; i++)
+        if (strcmp(g_presence[i].pubkey, sender_pubkey) == 0) {
+            snprintf(sender_name, sizeof(sender_name), "%s", g_presence[i].name);
             break;
         }
-        (void)e;
+    if (!sender_name[0])
+        snprintf(sender_name, sizeof(sender_name), "%.12s", sender_pubkey);
+
+    if (!g_chat_with[0]) {
+        /* no conversation open: adopt the sender */
+        snprintf(g_chat_with, sizeof(g_chat_with), "%s", sender_pubkey);
+        snprintf(g_chat_name, sizeof(g_chat_name), "%s", sender_name);
     }
-    if (strcmp(g_chat_with, sender_pubkey) != 0)
-        return; /* DM from someone else while chatting: ignore for now */
+    if (strcmp(g_chat_with, sender_pubkey) != 0) {
+        /* DM from someone else while chatting: note it and switch on next open */
+        char note[256];
+        snprintf(note, sizeof(note),
+                 "New message from %s (open Chat to read it).", sender_name);
+        if (g_hwnd)
+            MessageBoxA(g_hwnd, note, "p99lfg", MB_ICONINFORMATION);
+        /* store as the pending conversation so Chat opens with them */
+        snprintf(g_chat_with, sizeof(g_chat_with), "%s", sender_pubkey);
+        snprintf(g_chat_name, sizeof(g_chat_name), "%s", sender_name);
+        g_chat_log[0] = '\0';
+    }
     strncat(g_chat_log, "Them: ", sizeof(g_chat_log) - strlen(g_chat_log) - 1);
     strncat(g_chat_log, plain, sizeof(g_chat_log) - strlen(g_chat_log) - 1);
     strncat(g_chat_log, "\r\n", sizeof(g_chat_log) - strlen(g_chat_log) - 1);
@@ -542,6 +575,48 @@ static LRESULT CALLBACK chat_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 
 static void on_chat(void)
 {
+    /* start (or resume) a conversation with the selected player */
+    LRESULT sel = SendMessageA(g_list, LB_GETCURSEL, 0, 0);
+    if (sel != LB_ERR) {
+        char buf[256] = {0};
+        SendMessageA(g_list, LB_GETTEXT, (WPARAM)sel, (LPARAM)buf);
+        char *name = buf;
+        if (strncmp(name, "---", 3) == 0)
+            return;
+        if (strncmp(name, "* ", 2) == 0)
+            name += 2;
+        while (*name == '[') {
+            name = strchr(name, ']');
+            if (!name)
+                return;
+            name++;
+            if (*name == ' ')
+                name++;
+        }
+        char *sp = strchr(name, ' ');
+        if (sp)
+            *sp = '\0';
+        const char *pk = presence_pubkey(name);
+        if (pk && pk[0]) {
+            snprintf(g_chat_with, sizeof(g_chat_with), "%s", pk);
+            snprintf(g_chat_name, sizeof(g_chat_name), "%s", name);
+        } else {
+            char msg[256];
+            snprintf(msg, sizeof(msg),
+                     "No Nostr identity known for '%s'.\n\n"
+                     "They appear to be from your local log scan and don't run\n"
+                     "the app (or their entry hasn't arrived yet). Encrypted\n"
+                     "DMs need their app to have published an event.", name);
+            MessageBoxA(g_hwnd, msg, "p99lfg", MB_ICONINFORMATION);
+            return;
+        }
+    }
+    if (!g_chat_with[0]) {
+        MessageBoxA(g_hwnd,
+                    "Select a player in the list first, then click Chat.",
+                    "p99lfg", MB_ICONINFORMATION);
+        return;
+    }
     WNDCLASSA wc = {0};
     wc.lpfnWndProc = chat_wnd_proc;
     wc.hInstance = GetModuleHandleA(NULL);
