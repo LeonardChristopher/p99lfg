@@ -9,6 +9,7 @@
 #include "qrcodegen.h"
 
 #include <windows.h>
+#include <windowsx.h>
 #include <commdlg.h>
 #include <commctrl.h>
 #include <shlobj.h>
@@ -303,6 +304,32 @@ static void refresh_dir_label(HWND hwnd)
 
 static void populate_list(void)
 {
+    /* remember the selected row's name so refreshes keep the highlight */
+    char sel_name[64] = "";
+    LRESULT sel = SendMessageA(g_list, LB_GETCURSEL, 0, 0);
+    if (sel != LB_ERR) {
+        char buf[256] = {0};
+        SendMessageA(g_list, LB_GETTEXT, (WPARAM)sel, (LPARAM)buf);
+        char *name = buf;
+        if (strncmp(name, "---", 3) != 0) {
+            if (strncmp(name, "* ", 2) == 0)
+                name += 2;
+            while (*name == '[') {
+                char *close = strchr(name, ']');
+                if (!close) { name = NULL; break; }
+                name = close + 1;
+                if (*name == ' ')
+                    name++;
+            }
+            if (name) {
+                char *sp = strchr(name, ' ');
+                if (sp)
+                    *sp = '\0';
+                snprintf(sel_name, sizeof(sel_name), "%s", name);
+            }
+        }
+    }
+
     SendMessageA(g_list, LB_RESETCONTENT, 0, 0);
     if (g_favs && fav_count(g_favs) > 0) {
         SendMessageA(g_list, LB_ADDSTRING, 0, (LPARAM)"--- Favourites ---");
@@ -328,6 +355,7 @@ static void populate_list(void)
         }
         SendMessageA(g_list, LB_ADDSTRING, 0, (LPARAM)"--- All LFG ---");
     }
+    int reselect = LB_ERR;
     for (int i = 0; i < lfg_count(g_state); i++) {
         const LfgEntry *e = lfg_get(g_state, i);
         if (g_favs && fav_has(g_favs, e->name))
@@ -340,7 +368,23 @@ static void populate_list(void)
                  e->source == LFG_SRC_MANUAL ? "  (manual)" : "",
                  "");
         SendMessageA(g_list, LB_ADDSTRING, 0, (LPARAM)row);
+        if (sel_name[0] && strcmp(e->name, sel_name) == 0)
+            reselect = (int)SendMessageA(g_list, LB_GETCOUNT, 0, 0) - 1;
     }
+    if (reselect == LB_ERR && sel_name[0]) {
+        /* maybe it was in the favourites section */
+        int count = (int)SendMessageA(g_list, LB_GETCOUNT, 0, 0);
+        for (int i = 0; i < count; i++) {
+            char buf[256] = {0};
+            SendMessageA(g_list, LB_GETTEXT, (WPARAM)i, (LPARAM)buf);
+            if (strstr(buf, sel_name)) {
+                reselect = i;
+                break;
+            }
+        }
+    }
+    if (reselect != LB_ERR)
+        SendMessageA(g_list, LB_SETCURSEL, (WPARAM)reselect, 0);
 }
 
 static void do_poll(void)
@@ -765,6 +809,15 @@ static void on_show_qr(void)
     UpdateWindow(g_qr_wnd);
 }
 
+static BOOL list_pick_row(POINT pt)
+{
+    LRESULT idx = SendMessageA(g_list, LB_ITEMFROMPOINT, 0, MAKELPARAM(pt.x, pt.y));
+    if (HIWORD(idx) != 0)
+        return FALSE;
+    SendMessageA(g_list, LB_SETCURSEL, LOWORD(idx), 0);
+    return TRUE;
+}
+
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
@@ -785,6 +838,35 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_DMARRIVED:
         chat_refresh();
         return 0;
+    case WM_CONTEXTMENU: {
+        if ((HWND)wp != g_list)
+            break;
+        POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+        if (pt.x == -1 && pt.y == -1) {
+            /* menu key: anchor on the current selection */
+            RECT rc;
+            GetWindowRect(g_list, &rc);
+            pt.x = rc.left + 40;
+            pt.y = rc.top + 20;
+            LRESULT cur = SendMessageA(g_list, LB_GETCURSEL, 0, 0);
+            if (cur == LB_ERR)
+                break;
+        } else {
+            POINT client_pt = pt;
+            ScreenToClient(g_list, &client_pt);
+            if (!list_pick_row(client_pt))
+                break;
+        }
+        HMENU menu = CreatePopupMenu();
+        AppendMenuA(menu, MF_STRING, ID_BTN_CHAT, "Chat...");
+        AppendMenuA(menu, MF_STRING, ID_BTN_FAV, "Toggle Favourite");
+        AppendMenuA(menu, MF_STRING, ID_BTN_RATE, "Rate...");
+        AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
+        AppendMenuA(menu, MF_STRING, ID_BTN_REMOVE, "Remove from list");
+        TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
+        DestroyMenu(menu);
+        return 0;
+    }
     case WM_COMMAND:
         switch (LOWORD(wp)) {
         case ID_BTN_REFRESH: do_poll(); return 0;
