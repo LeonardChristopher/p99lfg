@@ -123,7 +123,7 @@ static int tls_connect_impl(const char *host, void *sockp, TlsCtx **out)
         return -1;
     }
     /* state handler only signals on ready/failed/cancelled */
-    if (nw_connection_get_current_path(t->conn) == NULL) {
+    if (nw_connection_copy_current_path(t->conn) == NULL) {
         nw_connection_cancel(t->conn);
         free(t);
         return -1;
