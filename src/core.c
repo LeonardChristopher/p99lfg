@@ -45,6 +45,7 @@ struct LfgState {
     int nentries;
     int stale_minutes;
     int prev_in_game;
+    int scan_count;
 };
 
 static void trim(char *s)
@@ -238,12 +239,13 @@ static void scan_dir(LfgState *s)
     while ((de = readdir(d)) != NULL) {
         const char *fn = de->d_name;
         size_t len = strlen(fn);
+        int first = (s->scan_count == 0);
         if (len < 5 || !strstr(fn, ".txt")) {
-            dbg("scan_dir: skip '%s' (not .txt)", fn);
+            if (first) dbg("scan_dir: skip '%s' (not .txt)", fn);
             continue;
         }
         if (!starts_with(fn, "eqlog_")) {
-            dbg("scan_dir: skip '%s' (no eqlog_ prefix)", fn);
+            if (first) dbg("scan_dir: skip '%s' (no eqlog_ prefix)", fn);
             continue;
         }
         /* accept P99 naming across servers: eqlog_NAME_P1999Green.txt,
@@ -256,7 +258,7 @@ static void scan_dir(LfgState *s)
                 if (*p == '_')
                     uscore++;
             if (uscore != 0) {
-                dbg("scan_dir: skip '%s' (unrecognized server suffix)", fn);
+                if (first) dbg("scan_dir: skip '%s' (unrecognized server suffix)", fn);
                 continue;
             }
         }
@@ -274,6 +276,7 @@ static void scan_dir(LfgState *s)
     }
     closedir(d);
     dbg("scan_dir: %d log file(s) registered", s->nlogs);
+    s->scan_count++;
 }
 
 static void read_new_lines(LfgState *s, LogFile *lf, time_t now)

@@ -185,6 +185,13 @@ static void log_printf(const char *fmt, ...)
 
 static void log_line(const char *msg)
 {
+    if (g_log) {
+        long pos = ftell(g_log);
+        if (pos > 1024 * 1024) {
+            freopen(NULL, "w", g_log); /* truncate at 1MB */
+            log_printf("log truncated\n");
+        }
+    }
     log_printf("%s\n", msg);
 }
 
@@ -282,7 +289,7 @@ static DWORD WINAPI sync_thread(LPVOID arg)
     int round = 0;
     while (g_sync_thread_run) {
         sync_poll(&g_sync);
-        if (g_log) {
+        if (g_log && (round % 12 == 0)) {
             log_printf("sync poll round %d: ", round);
             for (int i = 0; i < g_sync.nrelays; i++)
                 log_printf("[%s connected=%d] ", g_sync.relays[i].url, g_sync.relays[i].connected);
