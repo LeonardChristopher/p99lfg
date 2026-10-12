@@ -51,7 +51,9 @@ attaches `p99lfg.exe` as an artifact on every push.
 - `src/ws_client.c` — minimal RFC 6455 WebSocket client
 - `src/sync.c` — publish/subscribe glue over relays
 - `src/win32_main.c` — the Windows GUI
+- `src/tls_schannel.c` — Windows TLS (SChannel) hooks for `wss://`
 - `vendor/secp256k1` — vendored libsecp256k1 (schnorr signatures)
+- `ios/` — iOS app (SwiftUI + the portable C core, see `ios/README.md`)
 - `tests/` — unit + loopback WebSocket integration tests
 
 ## Status
@@ -63,4 +65,4 @@ attaches `p99lfg.exe` as an artifact on every push.
 - [x] Sync layer: publish on Mark LFG, subscribe loop feeding remote entries into the list (parser unit-tested)
 - [x] Win32 GUI wired to sync (background relay poll thread)
 - [ ] On-Windows smoke test of SChannel path against a real relay
-- [ ] iOS/Android later (core + nostr + sync are portable C)
+- [x] iOS app: SwiftUI + portable C core, SecureTransport TLS hooks (`ios/`)

@@ -1,0 +1,55 @@
+name: build-ios
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: |
+          cd ios
+          xcodegen generate
+
+      - name: Build (iOS Simulator)
+        run: |
+          cd ios
+          set -o pipefail
+          xcodebuild -project p99lfg.xcodeproj \
+            -scheme p99lfg \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Release \
+            CODE_SIGNING_ALLOWED=NO \
+            build | xcbeautify || \
+          xcodebuild -project p99lfg.xcodeproj \
+            -scheme p99lfg \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Release \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Run portable core tests (define-only secp256k1)
+        run: |
+          set -e
+          mkdir -p /tmp/sectest
+          for f in secp256k1 precomputed_ecmult precomputed_ecmult_gen; do
+            clang -c -O2 \
+              -DENABLE_MODULE_SCHNORRSIG=1 -DENABLE_MODULE_EXTRAKEYS=1 \
+              -DENABLE_MODULE_ECDH=1 \
+              -Ivendor/secp256k1/include -Ivendor/secp256k1/src \
+              vendor/secp256k1/src/$f.c -o /tmp/sectest/$f.o
+          done
+          ar rcs /tmp/sectest/libsecp256k1.a /tmp/sectest/*.o
+          clang -O2 -Isrc -Ivendor/secp256k1/include -Ivendor/qrcodegen \
+            tests/test_all.c src/sha256.c src/nostr.c src/core.c src/sync.c src/ws_client.c src/aes.c src/chat.c src/fav.c src/rating.c vendor/qrcodegen/qrcodegen.c \
+            /tmp/sectest/libsecp256k1.a -o /tmp/sectest/test_all
+          /tmp/sectest/test_all

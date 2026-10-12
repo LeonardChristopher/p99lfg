@@ -55,4 +55,11 @@ void lfg_add_manual(LfgState *s, const char *name, const char *zone, const char 
 int lfg_remove(LfgState *s, const char *name);
 void lfg_remove_manual_all(LfgState *s);
 
+/* Field accessors for Swift (fixed C arrays don't bridge). */
+const char *lfg_entry_name(const LfgState *s, int i);
+const char *lfg_entry_zone(const LfgState *s, int i);
+const char *lfg_entry_detail(const LfgState *s, int i);
+int lfg_entry_source(const LfgState *s, int i);
+time_t lfg_entry_last_seen(const LfgState *s, int i);
+
 #endif

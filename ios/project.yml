@@ -1,0 +1,50 @@
+name: p99lfg
+options:
+  bundleIdPrefix: com.p99lfg
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+
+targets:
+  p99lfg:
+    type: application
+    platform: iOS
+    sources:
+      - path: src
+        excludes: ["p99lfg-Bridging-Header.h"]
+      - path: ../src
+        includes: ["core.c", "sha256.c", "nostr.c", "sync.c", "ws_client.c",
+                   "aes.c", "chat.c", "fav.c", "rating.c",
+                   "core.h", "sha256.h", "nostr.h", "sync.h", "ws_client.h",
+                   "tls_hooks.h", "aes.h", "chat.h", "fav.h", "rating.h"]
+      - path: ../vendor/secp256k1/src
+        includes: ["secp256k1.c", "precomputed_ecmult.c", "precomputed_ecmult_gen.c"]
+      - path: ../vendor/qrcodegen
+        includes: ["qrcodegen.c"]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.p99lfg.app
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_NSCameraUsageDescription: "Scan the QR code shown by the Windows p99lfg app to import your Nostr identity."
+        SWIFT_OBJC_BRIDGING_HEADER: $(PROJECT_DIR)/src/p99lfg-Bridging-Header.h
+        SWIFT_VERSION: "5.0"
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+        IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+        GCC_C_LANGUAGE_STANDARD: c99
+        GCC_PREPROCESSOR_DEFINITIONS:
+          - ENABLE_MODULE_SCHNORRSIG=1
+          - ENABLE_MODULE_EXTRAKEYS=1
+          - ENABLE_MODULE_ECDH=1
+        HEADER_SEARCH_PATHS:
+          - "$(PROJECT_DIR)/../src"
+          - "$(PROJECT_DIR)/../vendor/secp256k1/include"
+          - "$(PROJECT_DIR)/../vendor/secp256k1/src"
+          - "$(PROJECT_DIR)/../vendor/qrcodegen"
+        GCC_WARN_64_TO_32_BIT_CONVERSION: NO
