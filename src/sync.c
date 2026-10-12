@@ -1,4 +1,5 @@
 #include "sync.h"
+#include "chat.h"
 #include "ws_client.h"
 
 #include <stdio.h>
@@ -282,4 +283,50 @@ void sync_poll(SyncState *s)
         }
         ws_close(&c);
     }
+}
+
+void sync_set_dm_callback(SyncState *s, SyncOnDm cb, void *userdata)
+{
+    s->on_dm = cb;
+    s->dm_userdata = userdata;
+}
+
+void sync_set_generic_callback(SyncState *s, SyncOnGeneric cb, void *userdata)
+{
+    s->on_generic = cb;
+    s->generic_userdata = userdata;
+}
+
+void sync_set_server(SyncState *s, const char *server)
+{
+    snprintf(s->server, sizeof(s->server), "%s", server ? server : "green");
+}
+
+int sync_relay_count(SyncState *s)
+{
+    return s->nrelays;
+}
+
+const char *sync_relay_url(SyncState *s, int i)
+{
+    if (i < 0 || i >= s->nrelays)
+        return NULL;
+    return s->relays[i].url;
+}
+
+int sync_relay_connected(SyncState *s, int i)
+{
+    if (i < 0 || i >= s->nrelays)
+        return 0;
+    return s->relays[i].connected;
+}
+
+const char *sync_entry_name(const SyncRemoteEntry *e) { return e ? e->name : NULL; }
+const char *sync_entry_zone(const SyncRemoteEntry *e) { return e ? e->zone : NULL; }
+const char *sync_entry_detail(const SyncRemoteEntry *e) { return e ? e->detail : NULL; }
+
+int sync_decrypt_dm(SyncState *s, const char *sender, const char *content,
+                    char *out, size_t outsz)
+{
+    return chat_try_decrypt(s->privkey, sender, content, out, outsz);
 }

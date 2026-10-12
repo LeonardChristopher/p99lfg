@@ -79,8 +79,20 @@ int sync_handle_message(SyncState *s, const char *msg);
 int sync_send_event(SyncState *s, const char *msg);
 
 
-/* Set the DM callback (may be NULL). */
-#define sync_set_dm_callback(s, cb, ud) do { (s)->on_dm = (cb); (s)->dm_userdata = (ud); } while (0)
-#define sync_set_generic_callback(s, cb, ud) do { (s)->on_generic = (cb); (s)->generic_userdata = (ud); } while (0)
+/* Set the DM/generic callbacks (may be NULL). Real functions so Swift
+ * (which cannot see function-like macros) can call them. */
+void sync_set_dm_callback(SyncState *s, SyncOnDm cb, void *userdata);
+void sync_set_generic_callback(SyncState *s, SyncOnGeneric cb, void *userdata);
+
+/* Swift-bridge helpers (fixed C arrays don't bridge to Swift). */
+void sync_set_server(SyncState *s, const char *server);
+int sync_relay_count(SyncState *s);
+const char *sync_relay_url(SyncState *s, int i);
+int sync_relay_connected(SyncState *s, int i);
+const char *sync_entry_name(const SyncRemoteEntry *e);
+const char *sync_entry_zone(const SyncRemoteEntry *e);
+const char *sync_entry_detail(const SyncRemoteEntry *e);
+int sync_decrypt_dm(SyncState *s, const char *sender, const char *content,
+                    char *out, size_t outsz);
 
 #endif
