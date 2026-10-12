@@ -238,14 +238,28 @@ static void scan_dir(LfgState *s)
     while ((de = readdir(d)) != NULL) {
         const char *fn = de->d_name;
         size_t len = strlen(fn);
-        if (len < 12 || !starts_with(fn, "eqlog_"))
+        if (len < 5 || !strstr(fn, ".txt")) {
+            dbg("scan_dir: skip '%s' (not .txt)", fn);
             continue;
-        if (!strstr(fn, ".txt"))
+        }
+        if (!starts_with(fn, "eqlog_")) {
+            dbg("scan_dir: skip '%s' (no eqlog_ prefix)", fn);
             continue;
+        }
         /* accept P99 naming across servers: eqlog_NAME_P1999Green.txt,
-           eqlog_NAME_project1999.txt, etc. */
-        if (!strstr(fn, "P1999") && !strstr(fn, "p1999") && !strstr(fn, "project1999"))
-            continue;
+           eqlog_NAME_project1999.txt. Also accept bare eqlog_NAME.txt. */
+        if (!strstr(fn, "P1999") && !strstr(fn, "p1999") &&
+            !strstr(fn, "project1999") && !strstr(fn, "P1999Green")) {
+            /* still allow plain eqlog_NAME.txt (no server suffix) */
+            int uscore = 0;
+            for (const char *p = fn + 6; *p && *p != '.'; p++)
+                if (*p == '_')
+                    uscore++;
+            if (uscore != 0) {
+                dbg("scan_dir: skip '%s' (unrecognized server suffix)", fn);
+                continue;
+            }
+        }
         if (find_log_by_name(s, lfg_name_from_filename(fn)))
             continue;
         if (s->nlogs >= MAX_LOG_FILES)

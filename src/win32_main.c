@@ -43,10 +43,42 @@ static char g_keypath[LFG_PATH_MAX];
 
 /* last DM per sender pubkey: simple single-conversation chat window */
 #define CHAT_LOG_MAX 4096
+#define CHAT_PEERS_MAX 32
+
+typedef struct {
+    char pubkey[NOSTR_PUBKEY_HEX];
+    char name[64];
+    char log[CHAT_LOG_MAX];
+} ChatPeer;
+
+static ChatPeer g_chat_peers[CHAT_PEERS_MAX];
+static int g_nchatpeers;
 static char g_chat_with[NOSTR_PUBKEY_HEX];
 static char g_chat_name[64];
-static char g_chat_log[CHAT_LOG_MAX];
+static char *g_chat_log;   /* points at the active peer's log */
 static HWND g_chat_wnd, g_chat_edit, g_chat_input;
+
+static ChatPeer *chat_peer_get(const char *pubkey, const char *name)
+{
+    for (int i = 0; i < g_nchatpeers; i++)
+        if (strcmp(g_chat_peers[i].pubkey, pubkey) == 0)
+            return &g_chat_peers[i];
+    if (g_nchatpeers >= CHAT_PEERS_MAX)
+        return &g_chat_peers[0]; /* recycle the oldest slot */
+    ChatPeer *p = &g_chat_peers[g_nchatpeers++];
+    snprintf(p->pubkey, sizeof(p->pubkey), "%s", pubkey);
+    snprintf(p->name, sizeof(p->name), "%s", name ? name : "");
+    p->log[0] = '\0';
+    return p;
+}
+
+static ChatPeer *chat_peer_active(void)
+{
+    for (int i = 0; i < g_nchatpeers; i++)
+        if (strcmp(g_chat_peers[i].pubkey, g_chat_with) == 0)
+            return &g_chat_peers[i];
+    return NULL;
+}
 
 #define WM_DMARRIVED (WM_USER + 3)
 
@@ -208,26 +240,20 @@ static void on_dm(const char *sender_pubkey, const char *content, void *ud)
     if (!sender_name[0])
         snprintf(sender_name, sizeof(sender_name), "%.12s", sender_pubkey);
 
-    if (!g_chat_with[0]) {
-        /* no conversation open: adopt the sender */
-        snprintf(g_chat_with, sizeof(g_chat_with), "%s", sender_pubkey);
-        snprintf(g_chat_name, sizeof(g_chat_name), "%s", sender_name);
-    }
+    /* always append to the sender's own history */
+    ChatPeer *peer = chat_peer_get(sender_pubkey, sender_name);
+    strncat(peer->log, "Them: ", sizeof(peer->log) - strlen(peer->log) - 1);
+    strncat(peer->log, plain, sizeof(peer->log) - strlen(peer->log) - 1);
+    strncat(peer->log, "\r\n", sizeof(peer->log) - strlen(peer->log) - 1);
+
     if (strcmp(g_chat_with, sender_pubkey) != 0) {
-        /* DM from someone else while chatting: note it and switch on next open */
+        /* DM from someone we're not currently viewing: notify */
         char note[256];
         snprintf(note, sizeof(note),
                  "New message from %s (open Chat to read it).", sender_name);
         if (g_hwnd)
             MessageBoxA(g_hwnd, note, "p99lfg", MB_ICONINFORMATION);
-        /* store as the pending conversation so Chat opens with them */
-        snprintf(g_chat_with, sizeof(g_chat_with), "%s", sender_pubkey);
-        snprintf(g_chat_name, sizeof(g_chat_name), "%s", sender_name);
-        g_chat_log[0] = '\0';
     }
-    strncat(g_chat_log, "Them: ", sizeof(g_chat_log) - strlen(g_chat_log) - 1);
-    strncat(g_chat_log, plain, sizeof(g_chat_log) - strlen(g_chat_log) - 1);
-    strncat(g_chat_log, "\r\n", sizeof(g_chat_log) - strlen(g_chat_log) - 1);
     PostMessageA(g_hwnd, WM_DMARRIVED, 0, 0);
 }
 
@@ -538,8 +564,10 @@ static void on_rate(void)
 /* ---- chat ---- */
 static void chat_refresh(void)
 {
-    if (g_chat_edit)
-        SetWindowTextA(g_chat_edit, g_chat_log);
+    if (g_chat_edit) {
+        ChatPeer *peer = chat_peer_active();
+        SetWindowTextA(g_chat_edit, peer ? peer->log : "");
+    }
 }
 
 static LRESULT CALLBACK chat_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
@@ -549,15 +577,20 @@ static LRESULT CALLBACK chat_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             char m[512];
             GetWindowTextA(g_chat_input, m, sizeof(m));
             if (m[0] && g_chat_with[0]) {
+                ChatPeer *peer = chat_peer_active();
                 if (chat_send_message(&g_sync, g_chat_with, m) == 0) {
-                    strncat(g_chat_log, "You: ", sizeof(g_chat_log) - strlen(g_chat_log) - 1);
-                    strncat(g_chat_log, m, sizeof(g_chat_log) - strlen(g_chat_log) - 1);
-                    strncat(g_chat_log, "\r\n", sizeof(g_chat_log) - strlen(g_chat_log) - 1);
+                    if (peer) {
+                        strncat(peer->log, "You: ", sizeof(peer->log) - strlen(peer->log) - 1);
+                        strncat(peer->log, m, sizeof(peer->log) - strlen(peer->log) - 1);
+                        strncat(peer->log, "\r\n", sizeof(peer->log) - strlen(peer->log) - 1);
+                    }
                     SetWindowTextA(g_chat_input, "");
                     chat_refresh();
                 } else {
-                    MessageBoxA(dlg, "Send failed (no relay reachable).", "p99lfg",
-                                MB_ICONINFORMATION);
+                    if (peer)
+                        strncat(peer->log, "(send failed - no relay reachable)\r\n",
+                                sizeof(peer->log) - strlen(peer->log) - 1);
+                    chat_refresh();
                 }
             } else if (!g_chat_with[0]) {
                 MessageBoxA(dlg,
@@ -598,8 +631,9 @@ static void on_chat(void)
             *sp = '\0';
         const char *pk = presence_pubkey(name);
         if (pk && pk[0]) {
+            ChatPeer *peer = chat_peer_get(pk, name);
             snprintf(g_chat_with, sizeof(g_chat_with), "%s", pk);
-            snprintf(g_chat_name, sizeof(g_chat_name), "%s", name);
+            snprintf(g_chat_name, sizeof(g_chat_name), "%s", peer->name[0] ? peer->name : name);
         } else {
             char msg[256];
             snprintf(msg, sizeof(msg),
@@ -652,52 +686,83 @@ static void on_chat(void)
 }
 
 /* ---- QR identity ---- */
+/* ---- QR identity ---- */
+static uint8_t g_qr[qrcodegen_BUFFER_LEN_MAX];
+static int g_qr_size;
+static int g_qr_ready;
+static HWND g_qr_wnd;
+
+static LRESULT CALLBACK qr_wnd_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(w, &ps);
+        RECT rc;
+        GetClientRect(w, &rc);
+        FillRect(dc, &rc, (HBRUSH)GetStockObject(WHITE_BRUSH));
+        if (g_qr_ready) {
+            int scale = 6;
+            int px = g_qr_size * scale;
+            int ox = (rc.right - px) / 2;
+            int oy = 10;
+            if (ox < 0) ox = 0;
+            for (int y = 0; y < g_qr_size; y++) {
+                for (int x = 0; x < g_qr_size; x++) {
+                    if (qrcodegen_getModule(g_qr, x, y)) {
+                        RECT cell = { ox + x * scale, oy + y * scale,
+                                      ox + (x + 1) * scale, oy + (y + 1) * scale };
+                        FillRect(dc, &cell, (HBRUSH)GetStockObject(BLACK_BRUSH));
+                    }
+                }
+            }
+        }
+        EndPaint(w, &ps);
+        return 0;
+    }
+    case WM_DESTROY:
+        g_qr_wnd = NULL;
+        return 0;
+    }
+    return DefWindowProcA(w, msg, wp, lp);
+}
+
 static void on_show_qr(void)
 {
     if (!g_sync.privkey[0]) {
         MessageBoxA(g_hwnd, "No key available.", "p99lfg", MB_ICONINFORMATION);
         return;
     }
-    uint8_t qr[qrcodegen_BUFFER_LEN_MAX];
     uint8_t tmp[qrcodegen_BUFFER_LEN_MAX];
-    if (!qrcodegen_encodeText(g_sync.privkey, tmp, qr, qrcodegen_Ecc_MEDIUM,
-                               qrcodegen_VERSION_MIN, qrcodegen_VERSION_MAX,
-                               qrcodegen_Mask_AUTO, true)) {
+    if (!qrcodegen_encodeText(g_sync.privkey, tmp, g_qr, qrcodegen_Ecc_MEDIUM,
+                              qrcodegen_VERSION_MIN, qrcodegen_VERSION_MAX,
+                              qrcodegen_Mask_AUTO, true)) {
         MessageBoxA(g_hwnd, "Could not encode key as QR.", "p99lfg", MB_ICONINFORMATION);
         return;
     }
-    int size = qrcodegen_getSize(qr);
-    int scale = 6, px = size * scale;
-    HDC sdc = GetDC(NULL);
-    HDC mdc = CreateCompatibleDC(sdc);
-    HBITMAP bm = CreateCompatibleBitmap(sdc, px, px);
-    SelectObject(mdc, bm);
-    for (int y = 0; y < px; y++)
-        for (int x = 0; x < px; x++) {
-            BOOL dark = qrcodegen_getModule(qr, x / scale, y / scale);
-            SetPixel(mdc, x, y, dark ? RGB(0, 0, 0) : RGB(255, 255, 255));
-        }
-    BITMAP bmpinfo;
-    GetObjectA(bm, sizeof(bmpinfo), &bmpinfo);
-    /* render into a simple always-on-top popup via clipboard-free preview window */
-    HWND w = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, "STATIC", NULL,
-                             WS_POPUP | WS_VISIBLE,
-                             100, 100, px + 20, px + 40, NULL, NULL, NULL, NULL);
-    /* draw bitmap on paint */
-    SendMessageA(w, WM_SETTEXT, 0, (LPARAM)"p99lfg identity - scan with the iOS app");
-    HDC wdc = GetDC(w);
-    HDC bdc = CreateCompatibleDC(wdc);
-    SelectObject(bdc, bm);
-    BitBlt(wdc, 10, 10, px, px, bdc, 0, 0, SRCCOPY);
-    ReleaseDC(w, wdc);
-    DeleteDC(bdc);
-    DeleteObject(bm);
-    DeleteDC(mdc);
-    ReleaseDC(NULL, sdc);
-    (void)bmpinfo;
-    MessageBoxA(g_hwnd, "QR is displayed in the popup window.\nClose the message box to dismiss it.",
-                "p99lfg key QR", MB_OK);
-    DestroyWindow(w);
+    g_qr_size = qrcodegen_getSize(g_qr);
+    g_qr_ready = 1;
+
+    WNDCLASSA wc = {0};
+    wc.lpfnWndProc = qr_wnd_proc;
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.hbrBackground = (HBRUSH)GetStockObject(WHITE_BRUSH);
+    wc.lpszClassName = "p99lfg_qr";
+    RegisterClassA(&wc);
+
+    if (g_qr_wnd) {
+        InvalidateRect(g_qr_wnd, NULL, TRUE);
+        SetForegroundWindow(g_qr_wnd);
+        return;
+    }
+    int px = g_qr_size * 6;
+    g_qr_wnd = CreateWindowExA(WS_EX_TOPMOST, "p99lfg_qr",
+                               "p99lfg key - scan with the iOS app",
+                               WS_OVERLAPPEDWINDOW,
+                               CW_USEDEFAULT, CW_USEDEFAULT, px + 40, px + 70,
+                               g_hwnd, NULL, NULL, NULL);
+    ShowWindow(g_qr_wnd, SW_SHOW);
+    UpdateWindow(g_qr_wnd);
 }
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
