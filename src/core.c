@@ -402,30 +402,30 @@ void lfg_remove_manual_all(LfgState *s)
 
 const char *lfg_entry_name(const LfgState *s, int i)
 {
-    const LfgEntry *e = lfg_get(s, i);
+    const LfgEntry *e = lfg_get((LfgState *)s, i);
     return e ? e->name : NULL;
 }
 
 const char *lfg_entry_zone(const LfgState *s, int i)
 {
-    const LfgEntry *e = lfg_get(s, i);
+    const LfgEntry *e = lfg_get((LfgState *)s, i);
     return e ? e->zone : NULL;
 }
 
 const char *lfg_entry_detail(const LfgState *s, int i)
 {
-    const LfgEntry *e = lfg_get(s, i);
+    const LfgEntry *e = lfg_get((LfgState *)s, i);
     return e ? e->detail : NULL;
 }
 
 int lfg_entry_source(const LfgState *s, int i)
 {
-    const LfgEntry *e = lfg_get(s, i);
+    const LfgEntry *e = lfg_get((LfgState *)s, i);
     return e ? e->source : 0;
 }
 
 time_t lfg_entry_last_seen(const LfgState *s, int i)
 {
-    const LfgEntry *e = lfg_get(s, i);
+    const LfgEntry *e = lfg_get((LfgState *)s, i);
     return e ? e->last_seen : 0;
 }

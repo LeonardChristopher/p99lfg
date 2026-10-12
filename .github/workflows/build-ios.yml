@@ -49,7 +49,7 @@ jobs:
               vendor/secp256k1/src/$f.c -o /tmp/sectest/$f.o
           done
           ar rcs /tmp/sectest/libsecp256k1.a /tmp/sectest/*.o
-          clang -O2 -Isrc -Ivendor/secp256k1/include \
+          clang -O2 -Isrc -Ivendor/secp256k1/include -Ivendor/qrcodegen \
             tests/test_all.c src/sha256.c src/nostr.c src/core.c src/sync.c src/ws_client.c src/aes.c src/chat.c src/fav.c src/rating.c \
             /tmp/sectest/libsecp256k1.a -o /tmp/sectest/test_all
           /tmp/sectest/test_all
