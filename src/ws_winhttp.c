@@ -78,9 +78,9 @@ int ws_winhttp_connect(WsConn *c, const WsUrl *url)
     if (!w->request)
         goto fail;
 
-    BOOL status = FALSE;
+    /* must be set with NULL, 0 - any value pointer is ERROR_INVALID_PARAMETER */
     if (!WinHttpSetOption(w->request, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET,
-                          &status, sizeof(status)))
+                          NULL, 0))
         goto fail;
 
     if (!WinHttpSendRequest(w->request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
