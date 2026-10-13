@@ -45,3 +45,6 @@ int ws_recv_text(WsConn *c, char *out, size_t outsz);
 void ws_close(WsConn *c);
 
 #endif
+
+/* Optional diagnostics sink (set by the app; NULL = silent). */
+extern void (*ws_debug_hook)(const char *msg);

@@ -1080,8 +1080,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     log_printf("p99lfg starting\n");
     SetUnhandledExceptionFilter(crash_handler);
     lfg_set_debug(log_line);
-    extern void (*tls_debug_hook)(const char *);
-    tls_debug_hook = log_line;
+    {
+        extern void (*tls_debug_hook)(const char *);
+        extern void (*ws_debug_hook)(const char *);
+        tls_debug_hook = log_line;
+        ws_debug_hook = log_line;
+    }
     InitCommonControls();
     g_state = lfg_new();
     char dir[LFG_PATH_MAX];

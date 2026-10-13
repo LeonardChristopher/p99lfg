@@ -234,7 +234,8 @@ static void scan_dir(LfgState *s)
         dbg("scan_dir: cannot open dir '%s' (errno=%d)", s->dir, errno);
         return;
     }
-    dbg("scan_dir: opened '%s'", s->dir);
+    if (s->scan_count == 0)
+        dbg("scan_dir: opened '%s'", s->dir);
     struct dirent *de;
     while ((de = readdir(d)) != NULL) {
         const char *fn = de->d_name;
@@ -275,7 +276,8 @@ static void scan_dir(LfgState *s)
         dbg("scan_dir: watching '%s' as '%s'", fn, lf->name);
     }
     closedir(d);
-    dbg("scan_dir: %d log file(s) registered", s->nlogs);
+    if (s->scan_count == 0)
+        dbg("scan_dir: %d log file(s) registered", s->nlogs);
     s->scan_count++;
 }
 

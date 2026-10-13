@@ -1,10 +1,25 @@
 #include "ws_client.h"
 #include "tls_hooks.h"
 
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+void (*ws_debug_hook)(const char *msg) = NULL;
+
+static void ws_dbg(const char *fmt, ...)
+{
+    if (!ws_debug_hook)
+        return;
+    char buf[256];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    ws_debug_hook(buf);
+}
 
 /* Weak defaults so the core links without a TLS backend; tls_schannel.c
  * overrides these on Windows. */
@@ -93,20 +108,24 @@ int ws_parse_url(const char *url, WsUrl *out)
 
 static int tcp_connect(const WsUrl *url)
 {
+    ws_dbg("ws: connecting to %s:%d (tls=%d)...", url->host, url->port, url->use_tls);
     char portstr[8];
     snprintf(portstr, sizeof(portstr), "%d", url->port);
     struct addrinfo hints, *res = NULL;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(url->host, portstr, &hints, &res) != 0 || !res)
+    if (getaddrinfo(url->host, portstr, &hints, &res) != 0 || !res) {
+        ws_dbg("ws: DNS lookup for %s FAILED", url->host);
         return -1;
+    }
     ws_socket_t s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (s == WS_INVALID_SOCKET) {
         freeaddrinfo(res);
         return -1;
     }
     if (connect(s, res->ai_addr, (int)res->ai_addrlen) != 0) {
+        ws_dbg("ws: TCP connect to %s:%d FAILED", url->host, url->port);
         freeaddrinfo(res);
 #ifdef _WIN32
         closesocket(s);
@@ -208,10 +227,12 @@ int ws_connect(WsConn *c, const WsUrl *url)
     }
     hdr[got] = '\0';
     if (!strstr(hdr, " 101 ") && !strstr(hdr, "101 ")) {
+        ws_dbg("ws: %s:%d refused websocket upgrade: %.60s", url->host, url->port, hdr);
         ws_close(c);
         return -1;
     }
     c->connected = 1;
+    ws_dbg("ws: %s:%d CONNECTED OK", url->host, url->port);
     return 0;
 }
 
