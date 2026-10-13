@@ -31,6 +31,7 @@ typedef struct {
 typedef struct {
     char name[64];
     char pubkey[NOSTR_PUBKEY_HEX];
+    int officer; /* 1 = may invite others (leader grants) */
 } GroupMember;
 
 /* Publish the group state. Returns 0 if a relay accepted. */

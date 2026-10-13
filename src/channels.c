@@ -133,8 +133,9 @@ static void group_members_to_csv(GroupMember *m, int n, char *out, size_t outsz)
     out[0] = '\0';
     size_t o = 0;
     for (int i = 0; i < n && o < outsz; i++)
-        o += (size_t)snprintf(out + o, outsz - o, "%s%s:%s",
-                              i ? "," : "", m[i].name, m[i].pubkey);
+        o += (size_t)snprintf(out + o, outsz - o, "%s%s:%s:%d",
+                              i ? "," : "", m[i].name, m[i].pubkey,
+                              m[i].officer);
 }
 
 static int group_csv_to_members(const char *csv, GroupMember *m, int max)
@@ -151,11 +152,16 @@ static int group_csv_to_members(const char *csv, GroupMember *m, int max)
                 namelen = sizeof(m[n].name) - 1;
             memcpy(m[n].name, p, namelen);
             m[n].name[namelen] = '\0';
-            size_t pklen = len - namelen - 1;
+            const char *rest = colon + 1;
+            size_t restlen = len - namelen - 1;
+            const char *colon2 = memchr(rest, ':', restlen);
+            size_t pklen = colon2 ? (size_t)(colon2 - rest) : restlen;
             if (pklen >= NOSTR_PUBKEY_HEX)
                 pklen = NOSTR_PUBKEY_HEX - 1;
-            memcpy(m[n].pubkey, colon + 1, pklen);
+            memcpy(m[n].pubkey, rest, pklen);
             m[n].pubkey[pklen] = '\0';
+            m[n].officer = (colon2 && restlen - pklen - 1 >= 1 &&
+                            rest[pklen + 1] == '1') ? 1 : 0;
             n++;
         }
         p = c ? c + 1 : NULL;

@@ -58,6 +58,10 @@ static GroupMember g_group_members[GROUP_MEMBERS_MAX];
 static int g_group_nmembers;
 static GroupMember g_group_wait[GROUP_WAIT_MAX];
 static int g_group_nwait;
+static int g_group_is_leader;
+static char g_inv_channel[CHANNEL_NAME_MAX];
+static char g_inv_role[16];
+static char g_inv_sender[64];
 
 /* last DM per sender pubkey: simple single-conversation chat window */
 #define CHAT_LOG_MAX 4096
@@ -222,6 +226,8 @@ static const char *presence_mark(const char *name)
 #define ID_GROUP_LEAVE 247
 #define ID_GROUP_ROSTER 248
 #define ID_BTN_SETNAME 249
+#define ID_INV_MEMBER 260
+#define ID_INV_WAIT 261
 #define ID_BTN_CLEAR 250
 #define ID_BTN_HISTORY 251
 
@@ -337,6 +343,34 @@ static void on_dm(const char *sender_pubkey, const char *content, void *ud)
     if (!sender_name[0])
         snprintf(sender_name, sizeof(sender_name), "%.12s", sender_pubkey);
 
+    if (strncmp(plain, "GROUPINV:", 9) == 0) {
+        /* group invite via DM: GROUPINV:<channel>:<role> */
+        char ch[CHANNEL_NAME_MAX] = "";
+        char role[16] = "member";
+        const char *p = plain + 9;
+        const char *c1 = strchr(p, ':');
+        if (c1) {
+            size_t n = (size_t)(c1 - p);
+            if (n >= sizeof(ch)) n = sizeof(ch) - 1;
+            memcpy(ch, p, n);
+            snprintf(role, sizeof(role), "%s", c1 + 1);
+        } else {
+            snprintf(ch, sizeof(ch), "%s", p);
+        }
+        snprintf(g_group_name, sizeof(g_group_name), "%s", ch);
+        g_group_log_text[0] = '\0';
+        g_group_is_leader = 0;
+        char note[160];
+        snprintf(note, sizeof(note),
+                 "--- invited to group %s (%s) by %s ---\r\n", ch, role, sender_name);
+        strncat(g_group_log_text, note,
+                sizeof(g_group_log_text) - strlen(g_group_log_text) - 1);
+        MessageBoxA(g_hwnd,
+                    "You have been invited to a group!\nOpen the Group window to chat.",
+                    "p99lfg group invite", MB_ICONINFORMATION);
+        PostMessageA(g_hwnd, WM_USER + 4, 0, 0);
+        return;
+    }
     /* always append to the sender's own history */
     ChatPeer *peer = chat_peer_get(sender_pubkey, sender_name);
     strncat(peer->log, "Them: ", sizeof(peer->log) - strlen(peer->log) - 1);
@@ -1229,36 +1263,91 @@ static void on_group_join(HWND dlg)
     group_refresh();
 }
 
-static void on_group_joinq(HWND dlg)
+static void on_group_create(HWND dlg)
 {
-    if (!g_group_name[0])
-        return;
+    /* leader flow: create a fresh group with a unique channel tag */
+    char tag[16];
+    srand((unsigned)time(NULL) ^ (unsigned)GetTickCount());
+    snprintf(tag, sizeof(tag), "grp%06x", (unsigned)(rand() & 0xffffff));
+    snprintf(g_group_name, sizeof(g_group_name), "%s", tag);
+    g_group_log_text[0] = '\0';
+    g_group_nmembers = 0;
+    g_group_nwait = 0;
+    g_group_is_leader = 1;
     char myname[64] = "Player";
     if (g_chars && g_chars->count > 0)
         snprintf(myname, sizeof(myname), "%s", g_chars->chars[0].name);
+    GroupMember m;
+    memset(&m, 0, sizeof(m));
+    snprintf(m.name, sizeof(m.name), "%s", myname);
+    snprintf(m.pubkey, sizeof(m.pubkey), "%s", g_sync.pubkey);
+    g_group_members[g_group_nmembers++] = m;
+    group_state_publish(&g_sync, g_group_name, g_group_members,
+                        g_group_nmembers, g_group_wait, g_group_nwait);
+    char title[128];
+    snprintf(title, sizeof(title), "Group: %s (you are the leader)", tag);
+    SetWindowTextA(dlg, title);
+    char welcome[160];
+    snprintf(welcome, sizeof(welcome),
+             "--- group %s created ---\r\nRight-click players in the LFG list to invite them.\r\n",
+             tag);
+    strncat(g_group_log_text, welcome,
+            sizeof(g_group_log_text) - strlen(g_group_log_text) - 1);
+    if (g_group_channel)
+        SetWindowTextA(g_group_channel, tag);
+    group_roster_refresh();
+    group_refresh();
+}
 
-    /* apply the join locally first (deterministic, no round-trip):
-     * member if space, else waitlist; then publish state + notify */
+/* invite a player (from the LFG list) as member or waitlisted */
+static void on_invite(const char *name, int wait)
+{
+    if (!g_group_name[0] || !g_group_is_leader) {
+        MessageBoxA(g_hwnd,
+                    "Create a group first (Group button -> Create group).",
+                    "p99lfg", MB_ICONINFORMATION);
+        return;
+    }
+    const char *pk = presence_pubkey(name);
+    if (!pk || !pk[0]) {
+        MessageBoxA(g_hwnd,
+                    "That player doesn't use the app (no Nostr identity known) -\n"
+                    "only app users can be invited.",
+                    "p99lfg", MB_ICONINFORMATION);
+        return;
+    }
+    char myname[64] = "Player";
+    if (g_chars && g_chars->count > 0)
+        snprintf(myname, sizeof(myname), "%s", g_chars->chars[0].name);
+    /* the invite rides as an encrypted DM */
+    char payload[160];
+    snprintf(payload, sizeof(payload), "GROUPINV:%s:%s",
+             g_group_name, wait ? "wait" : "member");
+    chat_send_message_from(&g_sync, pk, myname, payload);
+    /* leader adds them to the roster immediately */
+    GroupMember m;
+    memset(&m, 0, sizeof(m));
+    snprintf(m.name, sizeof(m.name), "%s", name);
+    snprintf(m.pubkey, sizeof(m.pubkey), "%s", pk);
     int already = 0;
     for (int i = 0; i < g_group_nmembers; i++)
-        if (strcmp(g_group_members[i].pubkey, g_sync.pubkey) == 0)
+        if (strcmp(g_group_members[i].pubkey, pk) == 0)
             already = 1;
     if (!already) {
-        GroupMember m;
-        memset(&m, 0, sizeof(m));
-        snprintf(m.name, sizeof(m.name), "%s", myname);
-        snprintf(m.pubkey, sizeof(m.pubkey), "%s", g_sync.pubkey);
-        if (g_group_nmembers < GROUP_MEMBERS_MAX) {
+        if (g_group_nmembers < GROUP_MEMBERS_MAX)
             g_group_members[g_group_nmembers++] = m;
-        } else if (g_group_nwait < GROUP_WAIT_MAX) {
+        else if (g_group_nwait < GROUP_WAIT_MAX)
             g_group_wait[g_group_nwait++] = m;
-        }
         group_state_publish(&g_sync, g_group_name, g_group_members,
-                           g_group_nmembers, g_group_wait, g_group_nwait);
+                            g_group_nmembers, g_group_wait, g_group_nwait);
     }
-    /* also announce the join on the channel for live notification */
-    group_control_send(&g_sync, g_group_name, myname, g_sync.pubkey, 0);
+    char note[160];
+    snprintf(note, sizeof(note), "--- invited %s as %s ---\r\n", name,
+             (g_group_nmembers <= GROUP_MEMBERS_MAX && !wait) ? "member" : "waitlisted");
+    strncat(g_group_log_text, note,
+            sizeof(g_group_log_text) - strlen(g_group_log_text) - 1);
     group_roster_refresh();
+    group_refresh();
 }
 
 static void on_group_leave(HWND dlg)
@@ -1695,6 +1784,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         AppendMenuA(menu, MF_STRING, ID_BTN_CHAT, "Chat...");
         AppendMenuA(menu, MF_STRING, ID_BTN_FAV, "Toggle Favourite");
         AppendMenuA(menu, MF_STRING, ID_BTN_RATE, "Rate...");
+        if (g_group_is_leader) {
+            AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
+            AppendMenuA(menu, MF_STRING, ID_INV_MEMBER, "Invite to my group");
+            AppendMenuA(menu, MF_STRING, ID_INV_WAIT, "Invite to waitlist");
+        }
         AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
         AppendMenuA(menu, MF_STRING, ID_BTN_REMOVE, "Remove from list");
         TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
@@ -1707,6 +1801,31 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case ID_BTN_DIR: on_pick_dir(hwnd); return 0;
         case ID_BTN_ADD: on_add(); return 0;
         case ID_BTN_REMOVE: on_remove(); return 0;
+        case ID_INV_MEMBER:
+        case ID_INV_WAIT: {
+            LRESULT isel = SendMessageA(g_list, LB_GETCURSEL, 0, 0);
+            if (isel != LB_ERR) {
+                char ibuf[256] = {0};
+                SendMessageA(g_list, LB_GETTEXT, (WPARAM)isel, (LPARAM)ibuf);
+                char *iname = ibuf;
+                if (strncmp(iname, "* ", 2) == 0)
+                    iname += 2;
+                while (*iname == '[') {
+                    char *close = strchr(iname, ']');
+                    if (!close) { iname = NULL; break; }
+                    iname = close + 1;
+                    if (*iname == ' ')
+                        iname++;
+                }
+                if (iname) {
+                    char *sp = strchr(iname, ' ');
+                    if (sp)
+                        *sp = '\0';
+                    on_invite(iname, LOWORD(wp) == ID_INV_WAIT);
+                }
+            }
+            return 0;
+        }
         case ID_BTN_FAV: on_fav_toggle(); return 0;
         case ID_BTN_RATE: on_rate(); return 0;
         case ID_BTN_CHAT: on_chat(); return 0;
