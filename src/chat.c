@@ -2,6 +2,7 @@
  * Nostr relay plumbing. Content is "<base64 ciphertext>?iv=<base64 iv>",
  * encrypted with AES-256-CBC under an ECDH shared key (secp256k1). */
 #include "chat.h"
+#include "ws_client.h"
 
 #include "aes.h"
 #include "nostr.h"
@@ -256,14 +257,23 @@ int chat_send_message(SyncState *s, const char *peer_pubkey_hex,
         if (!s->relays[i].enabled)
             continue;
         WsUrl u;
-        if (ws_parse_url(s->relays[i].url, &u) != 0)
+        if (ws_parse_url(s->relays[i].url, &u) != 0) {
+            ws_dbg_public("chat: bad relay url %s", s->relays[i].url);
             continue;
+        }
         WsConn c;
-        if (ws_connect(&c, &u) != 0)
+        if (ws_connect(&c, &u) != 0) {
+            ws_dbg_public("chat: connect to %s failed", s->relays[i].url);
             continue;
+        }
         s->relays[i].connected = 1;
-        if (ws_send_text(&c, msg) == 0)
-            ok++;
+        if (ws_send_text(&c, msg) != 0) {
+            ws_dbg_public("chat: send to %s failed", s->relays[i].url);
+            ws_close(&c);
+            continue;
+        }
+        ws_dbg_public("chat: sent DM event id=%.12s to %s", ev.id, s->relays[i].url);
+        ok++;
         ws_close(&c);
     }
     return ok > 0 ? 0 : -1;
