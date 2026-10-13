@@ -112,11 +112,24 @@ int sync_send_event(SyncState *s, const char *msg)
         if (ws_parse_url(s->relays[i].url, &u) != 0)
             continue;
         WsConn c;
-        if (ws_connect(&c, &u) != 0)
+        if (ws_connect(&c, &u) != 0) {
+            ws_dbg_public("publish: connect to %s failed", s->relays[i].url);
             continue;
+        }
         s->relays[i].connected = 1;
-        if (ws_send_text(&c, msg) == 0)
-            ok++;
+        if (ws_send_text(&c, msg) != 0) {
+            ws_dbg_public("publish: send to %s failed", s->relays[i].url);
+            ws_close(&c);
+            continue;
+        }
+        /* wait for the relay's OK/notice; treat quiet as sent */
+        char resp[512];
+        int n = ws_recv_text(&c, resp, sizeof(resp));
+        if (n < 0)
+            ws_dbg_public("publish: no confirmation from %s (assuming sent)", s->relays[i].url);
+        else
+            ws_dbg_public("publish: %s said %.60s", s->relays[i].url, resp);
+        ok++;
         ws_close(&c);
     }
     return ok > 0 ? 0 : -1;
