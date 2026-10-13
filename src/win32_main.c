@@ -138,6 +138,22 @@ static void presence_touch_key(const char *name, const char *pubkey, uint64_t wh
     g_npresence++;
 }
 
+static int json_get_like(const char *content, const char *key, char *out, size_t outsz)
+{
+    char pat[40];
+    snprintf(pat, sizeof(pat), "\"%s\":\"", key);
+    const char *p = strstr(content, pat);
+    if (!p)
+        return 0;
+    p += strlen(pat);
+    const char *e = strchr(p, '"');
+    if (!e || (size_t)(e - p) >= outsz)
+        return 0;
+    memcpy(out, p, (size_t)(e - p));
+    out[e - p] = '\0';
+    return 1;
+}
+
 static void presence_set_user(const char *name, const char *user)
 {
     if (!user || !user[0])
@@ -377,6 +393,18 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
                        const char *content, uint64_t created_at, void *ud)
 {
     (void)ud;
+    if (kind == 30082) {
+        /* profile announce: display name for the sender's key */
+        char user[64];
+        if (json_get_like(content, "user", user, sizeof(user))) {
+            for (int i = 0; i < g_npresence; i++)
+                if (strcmp(g_presence[i].pubkey, pubkey) == 0) {
+                    snprintf(g_presence[i].user, 64, "%s", user);
+                    break;
+                }
+        }
+        return;
+    }
     if (kind == 30081) {
         /* group state event: adopt it (state is consolidated by the host) */
         if (!g_group_name[0])
@@ -1375,6 +1403,51 @@ static void on_clear_list(void)
 /* ---- history window: known players not seen in >= 1 hour ---- */
 #define HISTORY_STALE_SECS 3600
 static HWND g_hist_wnd, g_hist_list;
+static char g_knownpath[LFG_PATH_MAX];
+
+static void known_save(void)
+{
+    if (!g_knownpath[0])
+        return;
+    FILE *f = fopen(g_knownpath, "w");
+    if (!f)
+        return;
+    for (int i = 0; i < g_npresence; i++) {
+        if (!g_presence[i].pubkey[0])
+            continue;
+        fprintf(f, "%s|%s|%llu|%s|%d|%s\n",
+                 g_presence[i].name, g_presence[i].pubkey,
+                 (unsigned long long)g_presence[i].last_seen,
+                 g_presence[i].cls, g_presence[i].level,
+                 g_presence[i].user);
+    }
+    fclose(f);
+}
+
+static void known_load(void)
+{
+    if (!g_knownpath[0])
+        return;
+    FILE *f = fopen(g_knownpath, "r");
+    if (!f)
+        return;
+    char line[600];
+    while (fgets(line, sizeof(line), f) && g_npresence < PRESENCE_MAX) {
+        char *nl = strpbrk(line, "\r\n");
+        if (nl)
+            *nl = '\0';
+        PresenceEntry *p = &g_presence[g_npresence];
+        char lvl[16] = "0";
+        if (sscanf(line, "%63[^|]|%64[^|]|%llu|%31[^|]|%15[^|]|%63[^\n]",
+                   p->name, p->pubkey,
+                   (unsigned long long *)&p->last_seen,
+                   p->cls, lvl, p->user) >= 3) {
+            p->level = atoi(lvl);
+            g_npresence++;
+        }
+    }
+    fclose(f);
+}
 
 static void history_populate(void)
 {
@@ -1410,7 +1483,7 @@ static void on_history_window(void)
         return;
     }
     WNDCLASSA wc = {0};
-    wc.lpfnWndProc = DefWindowProcA;
+    wc.lpfnWndProc = hist_wnd_proc;
     wc.hInstance = GetModuleHandleA(NULL);
     wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
     wc.lpszClassName = "p99lfg_hist";
@@ -1431,6 +1504,51 @@ static void on_history_window(void)
     history_populate();
 }
 
+static LRESULT CALLBACK hist_wnd_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == WM_CONTEXTMENU && (HWND)wp == g_hist_list) {
+        POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+        LRESULT idx = SendMessageA(g_hist_list, LB_GETCURSEL, 0, 0);
+        if (idx == LB_ERR) {
+            /* pick row under cursor */
+            POINT client_pt = pt;
+            ScreenToClient(g_hist_list, &client_pt);
+            LRESULT pick = SendMessageA(g_hist_list, LB_ITEMFROMPOINT, 0,
+                                        MAKELPARAM(client_pt.x, client_pt.y));
+            if (HIWORD(pick) != 0)
+                return 0;
+            idx = LOWORD(pick);
+            SendMessageA(g_hist_list, LB_SETCURSEL, (WPARAM)idx, 0);
+        }
+        char buf[256] = {0};
+        SendMessageA(g_hist_list, LB_GETTEXT, (WPARAM)idx, (LPARAM)buf);
+        HMENU menu = CreatePopupMenu();
+        AppendMenuA(menu, MF_STRING, ID_BTN_FAV, "Toggle Favourite");
+        TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, w, NULL);
+        DestroyMenu(menu);
+        /* remember which history row for the command handler */
+        static char hist_sel_name[64];
+        char *name = buf;
+        char *sp = strchr(name, ' ');
+        if (sp) {
+            size_t n = (size_t)(sp - name);
+            if (n < sizeof(hist_sel_name)) {
+                memcpy(hist_sel_name, name, n);
+                hist_sel_name[n] = '\0';
+                SetWindowLongPtrA(w, GWLP_USERDATA, (LONG_PTR)hist_sel_name);
+            }
+        }
+        return 0;
+    }
+    if (msg == WM_COMMAND && LOWORD(wp) == ID_BTN_FAV) {
+        const char *name = (const char *)GetWindowLongPtrA(w, GWLP_USERDATA);
+        if (name && name[0])
+            fav_toggle(g_favs, name);
+        return 0;
+    }
+    return DefWindowProcA(w, msg, wp, lp);
+}
+
 static LRESULT CALLBACK name_wnd_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
 {
     if (msg == WM_COMMAND && LOWORD(wp) == IDOK) {
@@ -1439,6 +1557,8 @@ static LRESULT CALLBACK name_wnd_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
         GetWindowTextA(ed, nm, sizeof(nm));
         snprintf(g_settings.displayname, sizeof(g_settings.displayname), "%s", nm);
         settings_save(&g_settings, g_inipath);
+        snprintf(g_sync.user_name, sizeof(g_sync.user_name), "%s", nm);
+        profile_announce(&g_sync, nm);
         DestroyWindow(w);
         return 0;
     }
@@ -1545,6 +1665,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         break;
     case WM_DESTROY:
+        {
+            extern void known_save(void);
+            known_save();
+        }
         g_sync_thread_run = 0;
         if (g_sync_thread)
             WaitForSingleObject(g_sync_thread, 6000);
@@ -1662,6 +1786,16 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
             strcpy(isl + 1, "p99lfg.ini");
         snprintf(g_inipath, sizeof(g_inipath), "%s", inipath);
         settings_load(&g_settings, inipath);
+        char knownpath[LFG_PATH_MAX];
+        GetModuleFileNameA(NULL, knownpath, sizeof(knownpath));
+        char *ksl = strrchr(knownpath, '\\');
+        if (ksl)
+            strcpy(ksl + 1, "p99lfg.known");
+        snprintf(g_knownpath, sizeof(g_knownpath), "%s", knownpath);
+    }
+    {
+        extern void known_load(void);
+        known_load();
     }
     guess_default_dir(dir, sizeof(dir));
     if (g_settings.logdir[0])
@@ -1682,6 +1816,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
               on_remote_event, NULL);
     snprintf(g_sync.user_name, sizeof(g_sync.user_name), "%s",
              g_settings.displayname);
+    profile_announce(&g_sync, g_settings.displayname);
     log_printf("sync init done, pubkey=%s\n", g_sync.pubkey);
     sync_set_dm_callback(&g_sync, on_dm, NULL);
     sync_set_generic_callback(&g_sync, on_generic, NULL);

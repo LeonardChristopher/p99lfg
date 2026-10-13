@@ -220,3 +220,24 @@ int group_control_send(SyncState *s, const char *channel,
     nostr_event_message(&ev, msg, sizeof(msg));
     return sync_send_event(s, msg);
 }
+
+/* ---- profile announce (kind 30082): display name for the key ----
+ * Published at startup and on name change so other users can resolve
+ * display names without waiting for an LFG event. */
+int profile_announce(SyncState *s, const char *displayname)
+{
+    if (!displayname || !displayname[0])
+        return 0;
+    NostrEvent ev;
+    memset(&ev, 0, sizeof(ev));
+    snprintf(ev.pubkey, sizeof(ev.pubkey), "%s", s->pubkey);
+    ev.created_at = (uint64_t)time(NULL);
+    ev.kind = 30082;
+    snprintf(ev.dtag, sizeof(ev.dtag), "profile");
+    snprintf(ev.content, sizeof(ev.content), "{\"user\":\"%s\"}", displayname);
+    if (nostr_sign_event(&ev, s->privkey) != 0)
+        return -1;
+    char msg[2048];
+    nostr_event_message(&ev, msg, sizeof(msg));
+    return sync_send_event(s, msg);
+}

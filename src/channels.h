@@ -58,3 +58,6 @@ int channel_parse(const char *evobj_json, char *channel_out, size_t chsz,
                   uint64_t *created_at_out);
 
 #endif
+
+/* Publish the display-name profile event (kind 30082). */
+int profile_announce(SyncState *s, const char *displayname);
