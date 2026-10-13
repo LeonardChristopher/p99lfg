@@ -320,6 +320,42 @@ static void on_dm(const char *sender_pubkey, const char *content, void *ud)
     PostMessageA(g_hwnd, WM_DMARRIVED, 0, 0);
 }
 
+static int group_am_host(void)
+{
+    /* lowest pubkey among members is host; empty group: first joiner
+     * seeds state and is host */
+    if (g_group_nmembers == 0)
+        return 1;
+    char lowest[NOSTR_PUBKEY_HEX];
+    snprintf(lowest, sizeof(lowest), "%s", g_group_members[0].pubkey);
+    for (int i = 1; i < g_group_nmembers; i++)
+        if (strcmp(g_group_members[i].pubkey, lowest) < 0)
+            snprintf(lowest, sizeof(lowest), "%s", g_group_members[i].pubkey);
+    return strcmp(g_sync.pubkey, lowest) == 0;
+}
+
+static void group_roster_refresh(void)
+{
+    if (!g_group_roster)
+        return;
+    char text[1024];
+    size_t o = 0;
+    o += (size_t)snprintf(text + o, sizeof(text) - o, "Group (%d/6):\r\n",
+                          g_group_nmembers);
+    for (int i = 0; i < g_group_nmembers; i++)
+        o += (size_t)snprintf(text + o, sizeof(text) - o, "  %s%s\r\n",
+                              g_group_members[i].name,
+                              group_am_host() ? "" : "");
+    if (g_group_nwait > 0) {
+        o += (size_t)snprintf(text + o, sizeof(text) - o,
+                              "Waiting (%d/2):\r\n", g_group_nwait);
+        for (int i = 0; i < g_group_nwait; i++)
+            o += (size_t)snprintf(text + o, sizeof(text) - o, "  %s\r\n",
+                                  g_group_wait[i].name);
+    }
+    SetWindowTextA(g_group_roster, text);
+}
+
 static void on_generic(int kind, const char *pubkey, const char *dtag,
                        const char *content, uint64_t created_at, void *ud)
 {
@@ -341,9 +377,9 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
     }
     if (kind == 42) {
         /* control messages first: {"join":"name:pubkey"} / {"leave":...} */
-        const char *chsuffix = strstr(dtag, "p99lfg-g-");
-        if (chsuffix && g_group_name[0] &&
-            strcmp(g_group_name, chsuffix + strlen("p99lfg-g-")) == 0) {
+        const char *chctl = strstr(dtag, "p99lfg-g-");
+        if (chctl && g_group_name[0] &&
+            strcmp(g_group_name, chctl + strlen("p99lfg-g-")) == 0) {
             char who[600] = "";
             const char *j = strstr(content, "\"join\":\"");
             const char *l = strstr(content, "\"leave\":\"");
@@ -1088,42 +1124,6 @@ static void on_chat(void)
 
 /* ---- group channel window ---- */
 static HWND g_group_wnd;
-
-static int group_am_host(void)
-{
-    /* lowest pubkey among members is host; empty group: first joiner
-     * seeds state and is host */
-    if (g_group_nmembers == 0)
-        return 1;
-    char lowest[NOSTR_PUBKEY_HEX];
-    snprintf(lowest, sizeof(lowest), "%s", g_group_members[0].pubkey);
-    for (int i = 1; i < g_group_nmembers; i++)
-        if (strcmp(g_group_members[i].pubkey, lowest) < 0)
-            snprintf(lowest, sizeof(lowest), "%s", g_group_members[i].pubkey);
-    return strcmp(g_sync.pubkey, lowest) == 0;
-}
-
-static void group_roster_refresh(void)
-{
-    if (!g_group_roster)
-        return;
-    char text[1024];
-    size_t o = 0;
-    o += (size_t)snprintf(text + o, sizeof(text) - o, "Group (%d/6):\r\n",
-                          g_group_nmembers);
-    for (int i = 0; i < g_group_nmembers; i++)
-        o += (size_t)snprintf(text + o, sizeof(text) - o, "  %s%s\r\n",
-                              g_group_members[i].name,
-                              group_am_host() ? "" : "");
-    if (g_group_nwait > 0) {
-        o += (size_t)snprintf(text + o, sizeof(text) - o,
-                              "Waiting (%d/2):\r\n", g_group_nwait);
-        for (int i = 0; i < g_group_nwait; i++)
-            o += (size_t)snprintf(text + o, sizeof(text) - o, "  %s\r\n",
-                                  g_group_wait[i].name);
-    }
-    SetWindowTextA(g_group_roster, text);
-}
 
 static void group_refresh(void)
 {
