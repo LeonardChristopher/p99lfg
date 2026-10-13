@@ -5,6 +5,7 @@
 #include "sync.h"
 #include "chat.h"
 #include "chars.h"
+#include "settings.h"
 #include "fav.h"
 #include "rating.h"
 #include "qrcodegen.h"
@@ -46,6 +47,8 @@ static RatingStore *g_ratings;
 static CharList *g_chars;
 static char g_keypath[LFG_PATH_MAX];
 static HWND g_char_list;
+static Settings g_settings;
+static char g_inipath[LFG_PATH_MAX];
 
 /* last DM per sender pubkey: simple single-conversation chat window */
 #define CHAT_LOG_MAX 4096
@@ -460,6 +463,8 @@ static void on_pick_dir(HWND hwnd)
     char path[MAX_PATH];
     if (SHGetPathFromIDListA(pidl, path)) {
         lfg_set_dir(g_state, path);
+        snprintf(g_settings.logdir, sizeof(g_settings.logdir), "%s", path);
+        settings_save(&g_settings, g_inipath);
         lfg_rescan(g_state);
         refresh_dir_label(hwnd);
         do_poll();
@@ -1117,7 +1122,18 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     InitCommonControls();
     g_state = lfg_new();
     char dir[LFG_PATH_MAX];
+    {
+        char inipath[LFG_PATH_MAX];
+        GetModuleFileNameA(NULL, inipath, sizeof(inipath));
+        char *isl = strrchr(inipath, '\\');
+        if (isl)
+            strcpy(isl + 1, "p99lfg.ini");
+        snprintf(g_inipath, sizeof(g_inipath), "%s", inipath);
+        settings_load(&g_settings, inipath);
+    }
     guess_default_dir(dir, sizeof(dir));
+    if (g_settings.logdir[0])
+        snprintf(dir, sizeof(dir), "%s", g_settings.logdir);
     log_printf("log dir guess: %s\n", dir);
     lfg_set_dir(g_state, dir);
 
@@ -1130,7 +1146,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     else
         strcat(keypath, ".key");
     log_printf("key path: %s\n", keypath);
-    sync_init(&g_sync, keypath, "green", on_remote_event, NULL);
+    sync_init(&g_sync, keypath, g_settings.server[0] ? g_settings.server : "green",
+              on_remote_event, NULL);
     log_printf("sync init done, pubkey=%s\n", g_sync.pubkey);
     sync_set_dm_callback(&g_sync, on_dm, NULL);
     sync_set_generic_callback(&g_sync, on_generic, NULL);
