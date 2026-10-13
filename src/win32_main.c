@@ -100,6 +100,8 @@ typedef struct {
     char name[64];
     char pubkey[NOSTR_PUBKEY_HEX];
     uint64_t last_seen;
+    char cls[32];
+    int level;
 } PresenceEntry;
 
 static PresenceEntry g_presence[PRESENCE_MAX];
@@ -251,6 +253,18 @@ static void on_remote_event(const SyncRemoteEntry *entry, const char *pubkey, vo
     presence_touch_key(entry->name, pubkey,
                        entry->created_at ? entry->created_at
                                          : (uint64_t)time(NULL));
+    if (entry->cls[0] || entry->level) {
+        /* remember class/level for the history display */
+        for (int i = 0; i < g_npresence; i++) {
+            if (strcmp(g_presence[i].name, entry->name) == 0) {
+                if (entry->cls[0])
+                    snprintf(g_presence[i].cls, 32, "%s", entry->cls);
+                if (entry->level > 0)
+                    g_presence[i].level = entry->level;
+                break;
+            }
+        }
+    }
     PostMessageA(g_hwnd, WM_REMOTE, 0, 0);
 }
 
@@ -313,11 +327,21 @@ static DWORD WINAPI sync_thread(LPVOID arg)
     int round = 0;
     while (g_sync_thread_run) {
         sync_poll(&g_sync);
-        if (g_log && (round % 12 == 0)) {
+        if (g_log && g_debug && (round % 12 == 0)) {
             log_printf("sync poll round %d: ", round);
             for (int i = 0; i < g_sync.nrelays; i++)
                 log_printf("[%s connected=%d] ", g_sync.relays[i].url, g_sync.relays[i].connected);
             log_printf("\n");
+        }
+        /* heartbeat: refresh the timestamps of our active LFG characters
+         * so other users see us as [ON] while the app runs (replaceable
+         * events: republishing just updates created_at) */
+        if (g_chars && (round % 12 == 0)) {
+            for (int i = 0; i < g_chars->count; i++)
+                if (g_chars->chars[i].lfg)
+                    sync_publish_char(&g_sync, g_chars->chars[i].name,
+                                      g_chars->chars[i].cls,
+                                      g_chars->chars[i].level, "", 1);
         }
         round++;
         for (int i = 0; i < 50 && g_sync_thread_run; i++)
@@ -411,6 +435,43 @@ static void populate_list(void)
             if (strstr(buf, sel_name)) {
                 reselect = i;
                 break;
+            }
+        }
+    }
+    /* history: known players whose entries expired (not currently LFG) */
+    {
+        int hist_count = 0;
+        for (int i = 0; i < g_npresence; i++) {
+            int in_list = 0;
+            for (int j = 0; j < lfg_count(g_state); j++) {
+                const LfgEntry *e = lfg_get(g_state, j);
+                if (strcmp(e->name, g_presence[i].name) == 0) {
+                    in_list = 1;
+                    break;
+                }
+            }
+            if (!in_list && g_presence[i].pubkey[0] &&
+                g_presence[i].last_seen > 0) {
+                if (hist_count == 0)
+                    SendMessageA(g_list, LB_ADDSTRING, 0,
+                                 (LPARAM)"--- Recently seen ---");
+                char row[256];
+                char when[32] = "";
+                uint64_t age = (uint64_t)time(NULL) - g_presence[i].last_seen;
+                if (age < 3600)
+                    snprintf(when, sizeof(when), "%llum ago",
+                             (unsigned long long)(age / 60));
+                else
+                    snprintf(when, sizeof(when), "%lluh ago",
+                             (unsigned long long)(age / 3600));
+                snprintf(row, sizeof(row), "%s%s  [%s]  %s",
+                         presence_mark(g_presence[i].name),
+                         g_presence[i].name,
+                         g_presence[i].cls[0] ? g_presence[i].cls : "?",
+                         when);
+                if (hist_count == 0)
+                    hist_count = 1;
+                SendMessageA(g_list, LB_ADDSTRING, 0, (LPARAM)row);
             }
         }
     }
