@@ -355,10 +355,12 @@ static void on_dm(const char *sender_pubkey, const char *content, void *ud)
 
 static int group_am_host(void)
 {
-    /* lowest pubkey among members is host; empty group: first joiner
-     * seeds state and is host */
+    /* lowest pubkey among members is host. An EMPTY group has no host:
+     * only the seeding joiner publishes initial state (checked at the
+     * call site) - bystanders must never seed state or competing
+     * state events collide. */
     if (g_group_nmembers == 0)
-        return 1;
+        return 0;
     char lowest[NOSTR_PUBKEY_HEX];
     snprintf(lowest, sizeof(lowest), "%s", g_group_members[0].pubkey);
     for (int i = 1; i < g_group_nmembers; i++)
@@ -434,7 +436,9 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
                 if (ce && (size_t)(ce - ctl) < sizeof(who)) {
                     memcpy(who, ctl, (size_t)(ce - ctl));
                     who[ce - ctl] = '\0';
-                    if (group_am_host()) {
+                    int is_seed = (j && g_group_nmembers == 0 &&
+                                  strcmp(pubkey, g_sync.pubkey) == 0);
+                    if (group_am_host() || is_seed) {
                         GroupMember m;
                         memset(&m, 0, sizeof(m));
                         char *colon = strchr(who, ':');
@@ -1184,6 +1188,10 @@ static void on_group_join(HWND dlg)
             *p = '_';
     snprintf(g_group_name, sizeof(g_group_name), "%s", ch);
     g_group_log_text[0] = '\0';
+    /* fresh channel: reset any previous channel's roster state */
+    g_group_nmembers = 0;
+    g_group_nwait = 0;
+    group_roster_refresh();
     char title[96];
     snprintf(title, sizeof(title), "Group: %s (semi-public channel)", ch);
     SetWindowTextA(dlg, title);
@@ -1668,12 +1676,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         break;
     case WM_DESTROY:
         {
-            extern void known_save(void);
-            known_save();
-        }
         g_sync_thread_run = 0;
         if (g_sync_thread)
             WaitForSingleObject(g_sync_thread, 6000);
+        {
+            extern void known_save(void);
+            known_save();
+        }
         KillTimer(hwnd, g_timer);
         PostQuitMessage(0);
         return 0;
