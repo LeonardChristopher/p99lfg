@@ -13,3 +13,6 @@ extern int (*tls_recv_hook)(TlsCtx *t, void *data, unsigned int len);
 extern void (*tls_close_hook)(TlsCtx *t);
 
 #endif
+
+/* Optional diagnostics sink (set by the app; NULL = silent). */
+extern void (*tls_debug_hook)(const char *msg);

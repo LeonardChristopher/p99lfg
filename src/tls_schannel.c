@@ -13,6 +13,7 @@
 #include <schannel.h>
 #include <security.h>
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,6 +36,20 @@ static int tls_send_impl(TlsCtx *t, const void *data, unsigned int len);
 static int tls_recv_impl(TlsCtx *t, void *data, unsigned int len);
 static void tls_close_impl(TlsCtx *t);
 
+void (*tls_debug_hook)(const char *msg) = NULL;
+
+static void tls_dbg(const char *fmt, ...)
+{
+    if (!tls_debug_hook)
+        return;
+    char buf[256];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    tls_debug_hook(buf);
+}
+
 static int tls_connect_impl(const char *host, void *sockp, TlsCtx **out)
 {
     TlsCtx *t = calloc(1, sizeof(TlsCtx));
@@ -51,6 +66,7 @@ static int tls_connect_impl(const char *host, void *sockp, TlsCtx **out)
         (SEC_CHAR *)"Microsoft Unified Security Protocol Provider",
         SECPKG_CRED_OUTBOUND, NULL, &cred, NULL, NULL, &t->hcred, NULL);
     if (ss != SEC_E_OK) {
+        tls_dbg("tls: AcquireCredentialsHandle failed status=0x%lx", (unsigned long)ss);
         free(t);
         return -1;
     }
@@ -124,18 +140,18 @@ static int tls_connect_impl(const char *host, void *sockp, TlsCtx **out)
                     tcp_send_all(t, outbufs[i].pvBuffer, outbufs[i].cbBuffer);
             /* consume input fully; EXTRA bytes must move to buffer front */
             if (inlen > 0) {
+                int extra_found = 0;
                 for (int i = 0; i < 4; i++) {
                     if (inbufs[i].BufferType == SECBUFFER_EXTRA && inbufs[i].cbBuffer > 0) {
-                        /* EXTRA pvBuffer may be NULL: bytes are at the tail
-                         * of our own inmem buffer */
                         size_t extra = inbufs[i].cbBuffer;
                         memmove(inmem, inmem + inlen - extra, extra);
                         inlen = extra;
+                        extra_found = 1;
                         break;
                     }
                 }
-                /* if the input was fully consumed, reset; if the caller had
-                 * EXTRA pvBuffer we already moved; either way, read more */
+                if (!extra_found)
+                    inlen = 0; /* input fully consumed */
             }
             /* read more handshake bytes */
             for (;;) {
@@ -157,6 +173,7 @@ static int tls_connect_impl(const char *host, void *sockp, TlsCtx **out)
             continue;
         }
         /* any other status: fail */
+        tls_dbg("tls %s: handshake failed status=0x%lx", host, (unsigned long)ss);
         goto fail;
     }
 
