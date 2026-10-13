@@ -218,6 +218,13 @@ static int decrypt_content(const uint8_t key[32], const char *content,
         if ((uint8_t)out[i] != pad)
             return -1;
     out[ctbytes - pad] = '\0';
+    /* wrong-key garbage that happens to pass PKCS#7 is still almost never
+     * valid text; require printable ASCII / newlines / tabs */
+    for (size_t i = 0; out[i]; i++) {
+        unsigned char ch = (unsigned char)out[i];
+        if (ch < 0x20 && ch != '\n' && ch != '\r' && ch != '\t')
+            return -1;
+    }
     return 0;
 }
 
