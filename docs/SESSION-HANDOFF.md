@@ -199,6 +199,28 @@ Fixes:
 - channel_parse() in channels.c is dead code (GUI parses inline);
   its kind check still says CHANNEL_KIND — harmless, unused.
 
+## 3c. Bug round 3 (able/cain: receiver saw nothing) — FIXED
+
+Symptom: sender saw own messages (LOCAL append — proves nothing about
+the relay); receiver never got anything. Relay probe (node script,
+kinds:[9] #t p99lfg) showed both users' messages STORED on nos.lol and
+relay.damus.io — so kind 9 publishes fine; the receive side dropped it.
+
+Root cause: MY earlier fix fb3da51 was INCOMPLETE. The kind-9 dispatch
+in sync.c sync_handle_message never landed (edit errored on a mismatch
+and only the nostr.c REQ half was retried). sync.c still forwarded only
+kinds 30079/30080/30083/30081/30082 -> kind 9 silently dropped before
+on_generic ever fired. LESSON: a failed multi-block edit must be
+re-verified block-by-block, not assumed.
+
+Fix: sync.c kind list now includes "9". Regression test added
+(test_sync_messages): a kind-9 wire event must reach the generic
+callback with its d tag — fails on old code, passes now.
+
+Debugging trick used: probe relays directly with node + built-in
+WebSocket: REQ {"kinds":[9],"#t":["p99lfg"],"limit":20} on wss://nos.lol
+/ wss://relay.damus.io — separates publish-side from receive-side bugs.
+
 ## 4. Next after this feature
 
 See ROADMAP doc: raids (multi-group), voice indication, mobile parity.

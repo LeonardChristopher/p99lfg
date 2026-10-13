@@ -130,6 +130,18 @@ static void remote_cb(const SyncRemoteEntry *e, const char *pk, void *ud)
     g_remote_calls++;
 }
 
+static int g_generic_calls;
+static int g_generic_kind;
+static char g_generic_dtag[140];
+static void generic_capture_cb(int kind, const char *pubkey, const char *dtag,
+                               const char *content, uint64_t created, void *ud)
+{
+    (void)pubkey; (void)content; (void)created; (void)ud;
+    g_generic_calls++;
+    g_generic_kind = kind;
+    snprintf(g_generic_dtag, sizeof(g_generic_dtag), "%s", dtag);
+}
+
 static void json_escape_into(char *dst, size_t dstsz, const char *src)
 {
     size_t o = 0;
@@ -186,6 +198,24 @@ static void test_sync_messages(void)
     const char *junk =
         "[\"EVENT\",\"sub1\",{\"content\":\"hello world\")]";
     CHECK(sync_handle_message(&st, junk) == -1, "malformed event returns -1");
+
+    /* kind-9 group chat event must reach the generic callback (this
+     * regressed once: the kind list in sync.c missed kind 9 and receivers
+     * silently dropped all channel messages while senders saw their own
+     * via local append) */
+    SyncState st9;
+    sync_init(&st9, "p99lfg_test_key.txt", "green", remote_cb, NULL);
+    sync_set_generic_callback(&st9, generic_capture_cb, NULL);
+    const char *ev9 =
+        "[\"EVENT\",\"sub1\",{\"id\":\"unique-id-9\",\"pubkey\":\"pk\",\"created_at\":1,\"kind\":9,"
+        "\"tags\":[[\"d\",\"p99lfg-g-grp0025c1\"],[\"t\",\"p99lfg\"]],"
+        "\"content\":\"{\\\"from\\\":\\\"able\\\",\\\"msg\\\":\\\"test\\\"}\",\"sig\":\"y\"}]";
+    g_generic_calls = 0;
+    CHECK(sync_handle_message(&st9, ev9) == 1,
+          "kind-9 channel event parsed");
+    CHECK(g_generic_calls == 1 && g_generic_kind == 9 &&
+          strcmp(g_generic_dtag, "p99lfg-g-grp0025c1") == 0,
+          "kind-9 event reached generic callback with dtag");
 
     WsUrl u;
     CHECK(ws_parse_url("wss://relay.example.com", &u) == 0 && u.use_tls, "wss parse");

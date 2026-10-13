@@ -232,9 +232,10 @@ int sync_handle_message(SyncState *s, const char *msg)
                     return 1;
                 }
             }
-            /* kinds 30079 (rating) / 30080 (vote): generic callback */
+            /* kinds 30079 (rating) / 30080 (vote) / 9 (group channel chat +
+             * join/leave control): generic callback */
             if ((strcmp(kindstr, "30079") == 0 || strcmp(kindstr, "30080") == 0 ||
-                 strcmp(kindstr, "30083") == 0 || strcmp(kindstr, "30081") == 0 ||
+                 strcmp(kindstr, "9") == 0 || strcmp(kindstr, "30081") == 0 ||
                  strcmp(kindstr, "30082") == 0)
                 && s->on_generic) {
                 char content[600], pubkey[80], dtag[140];
