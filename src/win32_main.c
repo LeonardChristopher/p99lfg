@@ -9,6 +9,8 @@
 #include "rating.h"
 #include "qrcodegen.h"
 
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <windowsx.h>
 #include <commdlg.h>
@@ -1079,6 +1081,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     log_open();
     log_printf("p99lfg starting\n");
     SetUnhandledExceptionFilter(crash_handler);
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
+        log_printf("WSAStartup FAILED (err=%d)\n", WSAGetLastError());
     lfg_set_debug(log_line);
     {
         extern void (*tls_debug_hook)(const char *);
