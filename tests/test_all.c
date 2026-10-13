@@ -173,10 +173,14 @@ static void test_sync_messages(void)
     json_escape_into(esc2, sizeof(esc2), content2);
     char evmsg2[1024];
     snprintf(evmsg2, sizeof(evmsg2),
-        "[\"EVENT\",\"sub1\",{\"id\":\"x\",\"pubkey\":\"pk\",\"created_at\":1,\"kind\":30078,"
+        "[\"EVENT\",\"sub1\",{\"id\":\"unique-id-2\",\"pubkey\":\"pk\",\"created_at\":1,\"kind\":30078,"
         "\"tags\":[],\"content\":\"%s\",\"sig\":\"y\"}]", esc2);
     CHECK(sync_handle_message(&st, evmsg2) == 1 && g_last_remote.lfg == 0,
           "lfg=false parsed");
+
+    /* duplicate event id: suppressed (relays re-send stored events each poll) */
+    CHECK(sync_handle_message(&st, evmsg2) == 1 && g_remote_calls == 2,
+          "duplicate event id suppressed");
 
     /* non-lfg-format content is ignored gracefully */
     const char *junk =

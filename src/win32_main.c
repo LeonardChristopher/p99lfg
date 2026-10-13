@@ -485,7 +485,7 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
             PostMessageA(g_hwnd, WM_GROUPREFRESH, 0, 0);
         return;
     }
-    if (kind == 30083) {
+    if (kind == 9) {
         /* control messages first: {"join":"name:pubkey"} / {"leave":...} */
         const char *chctl = strstr(dtag, "p99lfg-g-");
         if (chctl && g_group_name[0] &&

@@ -248,9 +248,9 @@ size_t nostr_event_message(const NostrEvent *ev, char *out, size_t outsz)
 
 size_t nostr_req_message(const char *subid, char *out, size_t outsz)
 {
-    /* LFG listings, kind-4 DMs, and rating/vote events (30079/30080), all
-     * under the #t p99lfg tag. */
+    /* LFG listings, kind-4 DMs, kind-9 group chat + join/leave control,
+     * and rating/vote/state events, all under the #t p99lfg tag. */
     return (size_t)snprintf(out, outsz,
-        "[\"REQ\",\"%s\",{\"kinds\":[%d,4,30079,30080,30081,30082,30083],\"#t\":[\"" LFG_TAG "\"]}]",
+        "[\"REQ\",\"%s\",{\"kinds\":[%d,4,9,30079,30080,30081,30082],\"#t\":[\"" LFG_TAG "\"]}]",
         subid, NOSTR_KIND_LFG);
 }

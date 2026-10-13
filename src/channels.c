@@ -7,8 +7,9 @@
 #include <string.h>
 #include <time.h>
 
-#define CHANNEL_KIND 30083  /* own kind-space: nos.lol rejects kind 42 ("not acceptable at this point") */
+#define CHANNEL_KIND 9  /* regular event: every message persists. 30000-39999 are REPLACEABLE (same pubkey+kind+d deletes the previous event on the relay) - using 30083 here silently deleted older messages and let chat replace pending join/leave control events. */
 #define CHANNEL_PREFIX "p99lfg-g-"
+#define CHANNEL_CTL_KIND 9  /* join/leave control: ephemeral regular event. Must NOT share a replaceable kind+dtag with chat - a chat message would delete a pending join request on the relay. */
 
 static void json_escape(const char *in, char *out, size_t outsz)
 {
@@ -215,7 +216,7 @@ int group_control_send(SyncState *s, const char *channel,
     memset(&ev, 0, sizeof(ev));
     snprintf(ev.pubkey, sizeof(ev.pubkey), "%s", s->pubkey);
     ev.created_at = (uint64_t)time(NULL);
-    ev.kind = 30083;
+    ev.kind = CHANNEL_CTL_KIND;
     snprintf(ev.dtag, sizeof(ev.dtag), "p99lfg-g-%s", channel);
     snprintf(ev.content, sizeof(ev.content),
              leave ? "{\"leave\":\"%s:%s\"}" : "{\"join\":\"%s:%s\"}",

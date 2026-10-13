@@ -169,6 +169,36 @@ The manual-join workaround for invitees: the invite auto-joins by name
 only; the roster fills in when the leader's state event arrives (<=5s
 poll) and now repaints live.
 
+## 3b. Bug round 2 (live test with reese/witherspoon) — FIXED
+
+Symptoms: occasional lost chat messages (rapid sends replaced each
+other; one user's message visible on one client but not the other);
+flaky join notifications/join flow.
+
+Root cause: channel chat AND join/leave control both used kind 30083
+with dtag p99lfg-g-<channel>. Kinds 30000-39999 are REPLACEABLE in
+Nostr: same pubkey+kind+dtag => the relay DELETES the older event.
+So a user's new chat message deleted their previous one, and a chat
+message could delete a pending join control event.
+
+Fixes:
+- chat messages: kind 9 (regular, immutable) — channels.c
+  CHANNEL_KIND 9
+- join/leave control: kind 9 as well, CHANNEL_CTL_KIND 9 (separate
+  define so it can diverge later) — same kind is fine now since both
+  are regular events, replaced-by nothing
+- REQ filter + sync_handle_message kind lists updated (nostr.c,
+  sync.c): kind 9 in, kind 30083 out
+- win32_main.c on_generic: kind 9 branch (was 30083)
+- NEW dedup: SyncState.seen_ids ring (256 ids, sync.h/sync.c) —
+  every poll re-downloads stored events; without dedup chat history
+  re-appended every 5s poll. Test fixture updated (ids must be
+  unique) + new dup-suppression test.
+- NOTE: group STATE stays kind 30081 replaceable — correct there,
+  state SHOULD replace.
+- channel_parse() in channels.c is dead code (GUI parses inline);
+  its kind check still says CHANNEL_KIND — harmless, unused.
+
 ## 4. Next after this feature
 
 See ROADMAP doc: raids (multi-group), voice indication, mobile parity.

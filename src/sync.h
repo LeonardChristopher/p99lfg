@@ -4,6 +4,7 @@
 #include "nostr.h"
 
 #define SYNC_MAX_RELAYS 4
+#define SYNC_SEEN_MAX 256
 
 /* Synchronize LFG entries over Nostr relays.
  *
@@ -55,6 +56,11 @@ typedef struct {
     void *userdata;
     void *dm_userdata;
     void *generic_userdata;
+    /* duplicate-suppression: relays re-send stored events on every poll;
+     * without this, every 5s poll would re-append chat history. */
+    char seen_ids[SYNC_SEEN_MAX][NOSTR_EVENT_ID_HEX];
+    int seen_n;
+    int seen_next;
 } SyncState;
 
 void sync_init(SyncState *s, const char *keyfile_path, const char *server,
