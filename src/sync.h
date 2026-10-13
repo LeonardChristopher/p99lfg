@@ -32,6 +32,7 @@ typedef struct {
     char cls[32];
     int level;
     int lfg;
+    char user[64];      /* display name of the human (may be empty) */
     uint64_t created_at; /* from the event, 0 if unknown */
 } SyncRemoteEntry;
 
@@ -47,6 +48,7 @@ typedef struct {
     char privkey[NOSTR_PRIVKEY_HEX];
     char pubkey[NOSTR_PUBKEY_HEX];
     char server[32];
+    char user_name[64];   /* display name shown in group chats */
     SyncOnEvent on_event;
     SyncOnDm on_dm;
     SyncOnGeneric on_generic;

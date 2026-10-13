@@ -146,8 +146,9 @@ int sync_publish_char(SyncState *s, const char *name, const char *cls,
     snprintf(ev.dtag, sizeof(ev.dtag), "%s/%s", s->server, name);
     snprintf(ev.content, sizeof(ev.content),
         "{\"v\":2,\"name\":\"%s\",\"class\":\"%s\",\"level\":%d,"
-        "\"zone\":\"%s\",\"lfg\":%s}",
-        name, cls, level, zone ? zone : "", lfg ? "true" : "false");
+        "\"zone\":\"%s\",\"lfg\":%s,\"user\":\"%s\"}",
+        name, cls, level, zone ? zone : "", lfg ? "true" : "false",
+        s->user_name[0] ? s->user_name : "");
     if (nostr_sign_event(&ev, s->privkey) != 0)
         return -1;
     char msg[2048];
@@ -272,6 +273,7 @@ int sync_handle_message(SyncState *s, const char *msg)
     json_get_string(content, "zone", e.zone, sizeof(e.zone));
     json_get_string(content, "detail", e.detail, sizeof(e.detail));
     json_get_string(content, "class", e.cls, sizeof(e.cls));
+    json_get_string(content, "user", e.user, sizeof(e.user));
     {
         char lvl[16] = "";
         const char *lp = strstr(content, "\"level\":");

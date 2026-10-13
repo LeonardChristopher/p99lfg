@@ -110,6 +110,7 @@ typedef struct {
     uint64_t last_seen;
     char cls[32];
     int level;
+    char user[64];   /* display name of the human behind the key */
 } PresenceEntry;
 
 static PresenceEntry g_presence[PRESENCE_MAX];
@@ -135,6 +136,17 @@ static void presence_touch_key(const char *name, const char *pubkey, uint64_t wh
              pubkey ? pubkey : "");
     g_presence[g_npresence].last_seen = when;
     g_npresence++;
+}
+
+static void presence_set_user(const char *name, const char *user)
+{
+    if (!user || !user[0])
+        return;
+    for (int i = 0; i < g_npresence; i++)
+        if (strcmp(g_presence[i].name, name) == 0) {
+            snprintf(g_presence[i].user, 64, "%s", user);
+            return;
+        }
 }
 
 static const char *presence_pubkey(const char *name)
@@ -192,6 +204,7 @@ static const char *presence_mark(const char *name)
 #define ID_GROUP_JOINQ 246
 #define ID_GROUP_LEAVE 247
 #define ID_GROUP_ROSTER 248
+#define ID_BTN_SETNAME 249
 
 static FILE *g_log;
 static int g_debug;
@@ -278,6 +291,8 @@ static void on_remote_event(const SyncRemoteEntry *entry, const char *pubkey, vo
                     snprintf(g_presence[i].cls, 32, "%s", entry->cls);
                 if (entry->level > 0)
                     g_presence[i].level = entry->level;
+                if (entry->user[0])
+                    snprintf(g_presence[i].user, 64, "%s", entry->user);
                 break;
             }
         }
@@ -472,14 +487,18 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
             return;
         char disp[700];
         char sendername[64] = "";
-        /* show the sender's known name, else key prefix */
+        char username[64] = "";
+        /* prefer the human's display name; fall back to char name, then key */
         for (int i = 0; i < g_npresence; i++)
             if (strcmp(g_presence[i].pubkey, pubkey) == 0) {
                 snprintf(sendername, sizeof(sendername), "%s", g_presence[i].name);
+                snprintf(username, sizeof(username), "%s", g_presence[i].user);
                 break;
             }
         if (!sendername[0])
             snprintf(sendername, sizeof(sendername), "%.8s", pubkey);
+        if (username[0])
+            snprintf(sendername, sizeof(sendername), "%s", username);
         if (frombuf[0])
             snprintf(disp, sizeof(disp), "%s [%s]: %.*s\r\n",
                      sendername, frombuf, (int)(me - m), m);
@@ -795,62 +814,64 @@ static void create_controls(HWND hwnd, HFONT hf)
 {
     g_list = CreateWindowExA(WS_EX_CLIENTEDGE, "LISTBOX", NULL,
                              WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
-                             10, 10, 330, 250, hwnd, (HMENU)ID_LIST, NULL, NULL);
+                             10, 10, 590, 420, hwnd, (HMENU)ID_LIST, NULL, NULL);
 
     /* ---- my characters panel (right) ---- */
     CreateWindowA("STATIC", "My Characters", WS_CHILD | WS_VISIBLE,
-                 350, 10, 130, 18, hwnd, NULL, NULL, NULL);
+                 610, 10, 130, 18, hwnd, NULL, NULL, NULL);
     g_char_list = CreateWindowExA(WS_EX_CLIENTEDGE, "LISTBOX", NULL,
                              WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
-                             350, 30, 140, 160, hwnd, (HMENU)ID_CHAR_LIST, NULL, NULL);
+                             610, 30, 140, 160, hwnd, (HMENU)ID_CHAR_LIST, NULL, NULL);
     CreateWindowA("STATIC", "Name:", WS_CHILD | WS_VISIBLE,
-                 350, 198, 34, 16, hwnd, NULL, NULL, NULL);
+                 610, 198, 34, 16, hwnd, NULL, NULL, NULL);
     CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                 386, 195, 104, 20, hwnd, (HMENU)ID_CHAR_NAME, NULL, NULL);
+                 646, 195, 104, 20, hwnd, (HMENU)ID_CHAR_NAME, NULL, NULL);
     CreateWindowA("STATIC", "Class:", WS_CHILD | WS_VISIBLE,
-                 350, 222, 34, 16, hwnd, NULL, NULL, NULL);
+                 610, 222, 34, 16, hwnd, NULL, NULL, NULL);
     CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                 386, 219, 104, 20, hwnd, (HMENU)ID_CHAR_CLASS, NULL, NULL);
+                 646, 219, 104, 20, hwnd, (HMENU)ID_CHAR_CLASS, NULL, NULL);
     CreateWindowA("STATIC", "Level:", WS_CHILD | WS_VISIBLE,
-                 350, 246, 34, 16, hwnd, NULL, NULL, NULL);
+                 610, 246, 34, 16, hwnd, NULL, NULL, NULL);
     CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "", WS_CHILD | WS_VISIBLE | ES_NUMBER,
-                 386, 243, 40, 20, hwnd, (HMENU)ID_CHAR_LEVEL, NULL, NULL);
+                 646, 243, 40, 20, hwnd, (HMENU)ID_CHAR_LEVEL, NULL, NULL);
     CreateWindowA("BUTTON", "Add", WS_CHILD | WS_VISIBLE,
-                 430, 242, 60, 22, hwnd, (HMENU)ID_BTN_CHAR_ADD, NULL, NULL);
+                 690, 242, 60, 22, hwnd, (HMENU)ID_BTN_CHAR_ADD, NULL, NULL);
     CreateWindowA("BUTTON", "Toggle LFG", WS_CHILD | WS_VISIBLE,
-                 350, 270, 68, 22, hwnd, (HMENU)ID_BTN_CHAR_LFG, NULL, NULL);
+                 610, 270, 68, 22, hwnd, (HMENU)ID_BTN_CHAR_LFG, NULL, NULL);
     CreateWindowA("BUTTON", "Delete", WS_CHILD | WS_VISIBLE,
-                 422, 270, 68, 22, hwnd, (HMENU)ID_BTN_CHAR_DEL, NULL, NULL);
+                 682, 270, 68, 22, hwnd, (HMENU)ID_BTN_CHAR_DEL, NULL, NULL);
     CreateWindowA("BUTTON", "Refresh",
-                  WS_CHILD | WS_VISIBLE, 10, 280, 70, 24, hwnd, (HMENU)ID_BTN_REFRESH, NULL, NULL);
+                  WS_CHILD | WS_VISIBLE, 10, 440, 70, 24, hwnd, (HMENU)ID_BTN_REFRESH, NULL, NULL);
     CreateWindowA("BUTTON", "Change log folder...",
-                  WS_CHILD | WS_VISIBLE, 90, 280, 130, 24, hwnd, (HMENU)ID_BTN_DIR, NULL, NULL);
+                  WS_CHILD | WS_VISIBLE, 90, 440, 140, 24, hwnd, (HMENU)ID_BTN_DIR, NULL, NULL);
     CreateWindowA("STATIC", "Name:", WS_CHILD | WS_VISIBLE,
-                  10, 315, 40, 20, hwnd, NULL, NULL, NULL);
+                  240, 445, 40, 20, hwnd, NULL, NULL, NULL);
     g_ed_name = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
                                 WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                55, 312, 110, 22, hwnd, (HMENU)ID_ED_NAME, NULL, NULL);
+                                285, 442, 110, 22, hwnd, (HMENU)ID_ED_NAME, NULL, NULL);
     CreateWindowA("STATIC", "Zone:", WS_CHILD | WS_VISIBLE,
-                  175, 315, 34, 20, hwnd, NULL, NULL, NULL);
+                  405, 445, 34, 20, hwnd, NULL, NULL, NULL);
     g_ed_zone = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
                                 WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                213, 312, 90, 22, hwnd, (HMENU)ID_ED_ZONE, NULL, NULL);
+                                443, 442, 90, 22, hwnd, (HMENU)ID_ED_ZONE, NULL, NULL);
     CreateWindowA("BUTTON", "Mark LFG",
-                  WS_CHILD | WS_VISIBLE, 310, 310, 80, 24, hwnd, (HMENU)ID_BTN_ADD, NULL, NULL);
+                  WS_CHILD | WS_VISIBLE, 540, 440, 80, 24, hwnd, (HMENU)ID_BTN_ADD, NULL, NULL);
     CreateWindowA("BUTTON", "Remove",
-                  WS_CHILD | WS_VISIBLE, 395, 310, 75, 24, hwnd, (HMENU)ID_BTN_REMOVE, NULL, NULL);
+                  WS_CHILD | WS_VISIBLE, 625, 440, 75, 24, hwnd, (HMENU)ID_BTN_REMOVE, NULL, NULL);
     CreateWindowA("BUTTON", "Fav",
-                  WS_CHILD | WS_VISIBLE, 10, 340, 45, 22, hwnd, (HMENU)ID_BTN_FAV, NULL, NULL);
+                  WS_CHILD | WS_VISIBLE, 10, 470, 45, 22, hwnd, (HMENU)ID_BTN_FAV, NULL, NULL);
     CreateWindowA("BUTTON", "Rate",
-                  WS_CHILD | WS_VISIBLE, 60, 340, 45, 22, hwnd, (HMENU)ID_BTN_RATE, NULL, NULL);
+                  WS_CHILD | WS_VISIBLE, 60, 470, 45, 22, hwnd, (HMENU)ID_BTN_RATE, NULL, NULL);
     CreateWindowA("BUTTON", "Chat",
-                  WS_CHILD | WS_VISIBLE, 110, 340, 45, 22, hwnd, (HMENU)ID_BTN_CHAT, NULL, NULL);
-    CreateWindowA("BUTTON", "Group chat",
-                  WS_CHILD | WS_VISIBLE, 160, 340, 80, 22, hwnd, (HMENU)ID_GROUP_TAB, NULL, NULL);
+                  WS_CHILD | WS_VISIBLE, 110, 470, 45, 22, hwnd, (HMENU)ID_BTN_CHAT, NULL, NULL);
+    CreateWindowA("BUTTON", "Group",
+                  WS_CHILD | WS_VISIBLE, 160, 470, 55, 22, hwnd, (HMENU)ID_GROUP_TAB, NULL, NULL);
     CreateWindowA("BUTTON", "Show key QR",
-                  WS_CHILD | WS_VISIBLE, 160, 340, 90, 22, hwnd, (HMENU)ID_BTN_QR, NULL, NULL);
+                  WS_CHILD | WS_VISIBLE, 220, 470, 90, 22, hwnd, (HMENU)ID_BTN_QR, NULL, NULL);
+    CreateWindowA("BUTTON", "Set name",
+                  WS_CHILD | WS_VISIBLE, 315, 470, 75, 22, hwnd, (HMENU)ID_BTN_SETNAME, NULL, NULL);
     g_st_dir = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE,
-                             10, 368, 480, 20, hwnd, (HMENU)ID_ST_DIR, NULL, NULL);
+                             10, 500, 690, 20, hwnd, (HMENU)ID_ST_DIR, NULL, NULL);
 
     HWND ctrl = GetWindow(hwnd, GW_CHILD);
     while (ctrl) {
@@ -1365,6 +1386,50 @@ static BOOL list_pick_row(POINT pt)
     return TRUE;
 }
 
+static LRESULT CALLBACK name_wnd_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == WM_COMMAND && LOWORD(wp) == IDOK) {
+        HWND ed = (HWND)GetWindowLongPtrA(w, GWLP_USERDATA);
+        char nm[64];
+        GetWindowTextA(ed, nm, sizeof(nm));
+        snprintf(g_settings.displayname, sizeof(g_settings.displayname), "%s", nm);
+        settings_save(&g_settings, g_inipath);
+        DestroyWindow(w);
+        return 0;
+    }
+    return DefWindowProcA(w, msg, wp, lp);
+}
+
+static void on_set_name(void)
+{
+    WNDCLASSA wc = {0};
+    wc.lpfnWndProc = name_wnd_proc;
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = "p99lfg_name";
+    RegisterClassA(&wc);
+    HWND w = CreateWindowExA(0, "p99lfg_name", "Enter your display name",
+                             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+                             300, 300, 320, 130, g_hwnd, NULL, NULL, NULL);
+    CreateWindowA("STATIC", "Name (shown to other players):",
+                  WS_CHILD | WS_VISIBLE, 10, 12, 280, 18, w, NULL, NULL, NULL);
+    HWND ed = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", g_settings.displayname,
+                  WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                  10, 34, 290, 22, w, (HMENU)250, NULL, NULL);
+    CreateWindowA("BUTTON", "Save",
+                  WS_CHILD | WS_VISIBLE, 120, 64, 80, 24,
+                  w, (HMENU)IDOK, NULL, NULL);
+    HFONT hf = (HFONT)SendMessageA(g_hwnd, WM_GETFONT, 0, 0);
+    HWND c = GetWindow(w, GW_CHILD);
+    while (c) {
+        SendMessageA(c, WM_SETFONT, (WPARAM)hf, TRUE);
+        c = GetWindow(c, GW_HWNDNEXT);
+    }
+    SetWindowLongPtrA(w, GWLP_USERDATA, (LONG_PTR)ed);
+    ShowWindow(w, SW_SHOW);
+    SetFocus(ed);
+}
+
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
@@ -1425,6 +1490,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case ID_BTN_RATE: on_rate(); return 0;
         case ID_BTN_CHAT: on_chat(); return 0;
         case ID_GROUP_TAB: on_group_window(); return 0;
+        case ID_BTN_SETNAME: on_set_name(); return 0;
         case ID_BTN_QR: on_show_qr(); return 0;
         case ID_BTN_CHAR_ADD: on_char_add(); return 0;
         case ID_BTN_CHAR_DEL: on_char_del(); return 0;
@@ -1567,6 +1633,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     log_printf("key path: %s\n", keypath);
     sync_init(&g_sync, keypath, g_settings.server[0] ? g_settings.server : "green",
               on_remote_event, NULL);
+    snprintf(g_sync.user_name, sizeof(g_sync.user_name), "%s",
+             g_settings.displayname);
     log_printf("sync init done, pubkey=%s\n", g_sync.pubkey);
     sync_set_dm_callback(&g_sync, on_dm, NULL);
     sync_set_generic_callback(&g_sync, on_generic, NULL);
@@ -1605,7 +1673,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
 
     g_hwnd = CreateWindowExA(0, "p99lfg", "p99lfg - Project 1999 LFG",
                              WS_OVERLAPPEDWINDOW,
-                             CW_USEDEFAULT, CW_USEDEFAULT, 510, 470,
+                             CW_USEDEFAULT, CW_USEDEFAULT, 900, 640,
                              NULL, NULL, hInst, hf);
     if (!g_hwnd) {
         log_printf("window creation FAILED (err=%lu)\n", (unsigned long)GetLastError());

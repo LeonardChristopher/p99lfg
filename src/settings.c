@@ -24,6 +24,8 @@ void settings_load(Settings *s, const char *path)
             snprintf(s->logdir, sizeof(s->logdir), "%s", line + 7);
         else if (strncmp(line, "server=", 7) == 0)
             snprintf(s->server, sizeof(s->server), "%s", line + 7);
+        else if (strncmp(line, "name=", 5) == 0)
+            snprintf(s->displayname, sizeof(s->displayname), "%s", line + 5);
     }
     fclose(f);
 }
@@ -35,6 +37,7 @@ int settings_save(const Settings *s, const char *path)
         return -1;
     fprintf(f, "logdir=%s\n", s->logdir);
     fprintf(f, "server=%s\n", s->server);
+    fprintf(f, "name=%s\n", s->displayname);
     fclose(f);
     return 0;
 }

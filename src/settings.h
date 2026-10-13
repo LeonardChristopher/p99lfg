@@ -7,6 +7,7 @@
 typedef struct {
     char logdir[512];
     char server[32];
+    char displayname[64];
 } Settings;
 
 /* Load from path (missing file = defaults, no error). */
