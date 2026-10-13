@@ -113,12 +113,12 @@ int sync_send_event(SyncState *s, const char *msg)
             continue;
         WsConn c;
         if (ws_connect(&c, &u) != 0) {
-            ws_dbg_public("publish: connect to %s failed", s->relays[i].url);
+            ws_log_public("publish: connect to %s failed", s->relays[i].url);
             continue;
         }
         s->relays[i].connected = 1;
         if (ws_send_text(&c, msg) != 0) {
-            ws_dbg_public("publish: send to %s failed", s->relays[i].url);
+            ws_log_public("publish: send to %s failed", s->relays[i].url);
             ws_close(&c);
             continue;
         }
@@ -126,9 +126,9 @@ int sync_send_event(SyncState *s, const char *msg)
         char resp[512];
         int n = ws_recv_text(&c, resp, sizeof(resp));
         if (n < 0)
-            ws_dbg_public("publish: no confirmation from %s (assuming sent)", s->relays[i].url);
+            ws_log_public("publish: no confirmation from %s (assuming sent)", s->relays[i].url);
         else
-            ws_dbg_public("publish: %s said %.60s", s->relays[i].url, resp);
+            ws_log_public("publish: %s said %.60s", s->relays[i].url, resp);
         ok++;
         ws_close(&c);
     }
@@ -328,13 +328,19 @@ void sync_poll(SyncState *s)
         nostr_req_message("p99lfg-poll", req, sizeof(req));
         ws_send_text(&c, req);
         int got_events = 0;
-        for (int m = 0; m < 40; m++) {
+        int quiet = 0; /* consecutive quiet cycles; relays answer the REQ
+                         within a few seconds - a single quiet window is not
+                         end-of-stream */
+        for (int m = 0; m < 60; m++) {
             char buf[8192];
             int n = ws_recv_text(&c, buf, sizeof(buf));
             if (n == -2) {
-                /* waited out with no data: normal end of drain */
-                break;
+                quiet++;
+                if (quiet >= 3) /* ~15s with nothing: really done */
+                    break;
+                continue; /* keep waiting: the backlog may still come */
             }
+            quiet = 0;
             if (n < 0) {
                 ws_dbg_public("sync: recv error after %d reads (%d events)", m, got_events);
                 break;
@@ -344,8 +350,6 @@ void sync_poll(SyncState *s)
                        m, got_events);
                 break;
             }
-            if (got_events == 0 && m >= 38)
-                ws_dbg_public("sync: still no events after %d reads, first msg: %.80s", m, buf);
             int r = sync_handle_message(s, buf);
             if (r == 1)
                 got_events++;

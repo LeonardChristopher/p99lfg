@@ -51,3 +51,8 @@ extern void (*ws_debug_hook)(const char *msg);
 
 /* public debug helper routed through ws_debug_hook */
 void ws_dbg_public(const char *fmt, ...);
+
+/* always-on diagnostics (not gated by the debug flag): publish/chat verdicts */
+extern void (*ws_log_hook)(const char *msg);
+
+void ws_log_public(const char *fmt, ...);

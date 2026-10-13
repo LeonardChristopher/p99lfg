@@ -24,6 +24,19 @@ void ws_dbg_public(const char *fmt, ...)
     ws_debug_hook(buf);
 }
 void (*tls_debug_hook)(const char *msg) = NULL;
+void (*ws_log_hook)(const char *msg) = NULL;
+
+void ws_log_public(const char *fmt, ...)
+{
+    if (!ws_log_hook)
+        return;
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    ws_log_hook(buf);
+}
 
 static void ws_dbg(const char *fmt, ...)
 {
