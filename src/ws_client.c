@@ -1,4 +1,7 @@
 #include "ws_client.h"
+#ifdef _WIN32
+#include "ws_winhttp.h"
+#endif
 #include "tls_hooks.h"
 
 #include <stdarg.h>
@@ -142,6 +145,10 @@ static ws_socket_t tcp_connect(const WsUrl *url)
 
 static int raw_send(WsConn *c, const void *data, size_t len)
 {
+#ifdef _WIN32
+    if (c->tls && c->sock == WS_INVALID_SOCKET)
+        return ws_winhttp_send_text(c, (const char *)data);
+#endif
     if (c->tls) {
         if (tls_send_hook)
             return tls_send_hook(c->tls, data, (unsigned int)len);
@@ -164,6 +171,10 @@ static int raw_send(WsConn *c, const void *data, size_t len)
 
 static int raw_recv(WsConn *c, void *data, size_t len)
 {
+#ifdef _WIN32
+    if (c->tls && c->sock == WS_INVALID_SOCKET)
+        return ws_winhttp_recv_text(c, (char *)data, len);
+#endif
     if (c->tls) {
         if (tls_recv_hook)
             return tls_recv_hook(c->tls, data, (unsigned int)len);
@@ -180,6 +191,12 @@ int ws_connect(WsConn *c, const WsUrl *url)
 {
     memset(c, 0, sizeof(*c));
     c->sock = WS_INVALID_SOCKET;
+#ifdef _WIN32
+    if (url->use_tls) {
+        /* wss:// via Microsoft's WinHTTP WebSocket (built-in TLS) */
+        return ws_winhttp_connect(c, url);
+    }
+#endif
     if (url->use_tls && !tls_connect_hook)
         return -1;
     c->sock = tcp_connect(url);
@@ -324,6 +341,12 @@ int ws_recv_text(WsConn *c, char *out, size_t outsz)
 
 void ws_close(WsConn *c)
 {
+#ifdef _WIN32
+    if (c->tls && c->sock == WS_INVALID_SOCKET) {
+        ws_winhttp_close(c);
+        return;
+    }
+#endif
     if (c->tls) {
         if (tls_close_hook)
             tls_close_hook(c->tls);
