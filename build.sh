@@ -17,7 +17,7 @@ CC=${CC:-gcc}
 FLAGS="-O2 -Isrc -Ivendor/secp256k1/include -Ivendor/secp256k1/build/include -Ivendor/qrcodegen"
 LIBS="vendor/secp256k1/build/lib/libsecp256k1.a"
 
-$CC $FLAGS tests/test_all.c src/sha256.c src/nostr.c src/core.c src/sync.c src/ws_client.c src/chat.c src/aes.c src/fav.c src/rating.c vendor/qrcodegen/qrcodegen.c $LIBS -o build/test_all
+$CC $FLAGS tests/test_all.c src/sha256.c src/nostr.c src/core.c src/sync.c src/ws_client.c src/chat.c src/aes.c src/fav.c src/rating.c src/chars.c vendor/qrcodegen/qrcodegen.c $LIBS -o build/test_all
 $CC $FLAGS tests/test_ws.c src/ws_client.c src/sha256.c src/nostr.c $LIBS -o build/test_ws
 $CC $FLAGS tests/cli_main.c src/core.c src/sha256.c src/nostr.c $LIBS -o build/cli
 

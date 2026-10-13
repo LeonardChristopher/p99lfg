@@ -122,6 +122,26 @@ int sync_send_event(SyncState *s, const char *msg)
     return ok > 0 ? 0 : -1;
 }
 
+int sync_publish_char(SyncState *s, const char *name, const char *cls,
+                      int level, const char *zone, int lfg)
+{
+    NostrEvent ev = {0};
+    snprintf(ev.pubkey, sizeof(ev.pubkey), "%s", s->pubkey);
+    ev.created_at = (uint64_t)time(NULL);
+    ev.kind = NOSTR_KIND_LFG;
+    /* one replaceable event per character */
+    snprintf(ev.dtag, sizeof(ev.dtag), "%s/%s", s->server, name);
+    snprintf(ev.content, sizeof(ev.content),
+        "{\"v\":2,\"name\":\"%s\",\"class\":\"%s\",\"level\":%d,"
+        "\"zone\":\"%s\",\"lfg\":%s}",
+        name, cls, level, zone ? zone : "", lfg ? "true" : "false");
+    if (nostr_sign_event(&ev, s->privkey) != 0)
+        return -1;
+    char msg[2048];
+    nostr_event_message(&ev, msg, sizeof(msg));
+    return sync_send_event(s, msg);
+}
+
 int sync_publish(SyncState *s, const char *content_json)
 {
     NostrEvent ev = {0};
@@ -237,6 +257,23 @@ int sync_handle_message(SyncState *s, const char *msg)
         return -1; /* not our format; ignore */
     json_get_string(content, "zone", e.zone, sizeof(e.zone));
     json_get_string(content, "detail", e.detail, sizeof(e.detail));
+    json_get_string(content, "class", e.cls, sizeof(e.cls));
+    {
+        char lvl[16] = "";
+        const char *lp = strstr(content, "\"level\":");
+        if (lp) {
+            lp += 8;
+            size_t li = 0;
+            while (*lp >= '0' && *lp <= '9' && li < sizeof(lvl) - 1)
+                lvl[li++] = *lp++;
+        }
+        e.level = atoi(lvl);
+        if (e.detail[0]) {
+            char lvl2[32];
+            snprintf(lvl2, sizeof(lvl2), "%d %s", e.level, e.cls);
+            /* keep detail as the display string: "60 Archmage" style */
+        }
+    }
     e.lfg = json_get_bool(content, "lfg", 1);
     {
         char nums[24] = {0};

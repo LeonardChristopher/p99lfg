@@ -4,6 +4,7 @@
 #include "core.h"
 #include "sync.h"
 #include "chat.h"
+#include "chars.h"
 #include "fav.h"
 #include "rating.h"
 #include "qrcodegen.h"
@@ -40,7 +41,9 @@ static int g_sync_thread_run;
 static HANDLE g_sync_thread;
 static FavList *g_favs;
 static RatingStore *g_ratings;
+static CharList *g_chars;
 static char g_keypath[LFG_PATH_MAX];
+static HWND g_char_list;
 
 /* last DM per sender pubkey: simple single-conversation chat window */
 #define CHAT_LOG_MAX 4096
@@ -157,6 +160,13 @@ static const char *presence_mark(const char *name)
 #define ID_CHAT_SEND 210
 #define ID_CHAT_INPUT 211
 #define ID_CHAT_LOG 212
+#define ID_CHAR_LIST 220
+#define ID_BTN_CHAR_ADD 221
+#define ID_BTN_CHAR_DEL 222
+#define ID_BTN_CHAR_LFG 223
+#define ID_CHAR_NAME 224
+#define ID_CHAR_CLASS 225
+#define ID_CHAR_LEVEL 226
 
 static FILE *g_log;
 
@@ -454,11 +464,101 @@ static void on_pick_dir(HWND hwnd)
     CoTaskMemFree(pidl);
 }
 
+static void populate_chars(void)
+{
+    SendMessageA(g_char_list, LB_RESETCONTENT, 0, 0);
+    if (!g_chars)
+        return;
+    for (int i = 0; i < g_chars->count; i++) {
+        Character *c = &g_chars->chars[i];
+        char row[160];
+        snprintf(row, sizeof(row), "%s  %d %s  %s",
+                 c->name, c->level, c->cls,
+                 c->lfg ? "[LFG]" : "");
+        SendMessageA(g_char_list, LB_ADDSTRING, 0, (LPARAM)row);
+    }
+}
+
+static void on_char_add(void)
+{
+    char name[CHAR_NAME_MAX], cls[CHAR_CLASS_MAX], lvl[8];
+    GetWindowTextA(GetDlgItem(g_hwnd, ID_CHAR_NAME), name, sizeof(name));
+    GetWindowTextA(GetDlgItem(g_hwnd, ID_CHAR_CLASS), cls, sizeof(cls));
+    GetWindowTextA(GetDlgItem(g_hwnd, ID_CHAR_LEVEL), lvl, sizeof(lvl));
+    int level = atoi(lvl);
+    if (!name[0] || !cls[0] || level < 1 || level > 65) {
+        MessageBoxA(g_hwnd,
+            "Fill in name, class, and level (1-65) for the character.",
+            "p99lfg", MB_ICONINFORMATION);
+        return;
+    }
+    if (chars_upsert(g_chars, name, cls, level) != 0)
+        return;
+    SetWindowTextA(GetDlgItem(g_hwnd, ID_CHAR_NAME), "");
+    populate_chars();
+}
+
+static void on_char_lfg_toggle(void)
+{
+    LRESULT sel = SendMessageA(g_char_list, LB_GETCURSEL, 0, 0);
+    if (sel == LB_ERR || !g_chars)
+        return;
+    Character *c = &g_chars->chars[sel];
+    chars_toggle_lfg(g_chars, c->name);
+    populate_chars();
+    /* publish this character's new state */
+    sync_publish_char(&g_sync, c->name, c->cls, c->level, "", c->lfg);
+}
+
+static void on_char_del(void)
+{
+    LRESULT sel = SendMessageA(g_char_list, LB_GETCURSEL, 0, 0);
+    if (sel == LB_ERR || !g_chars)
+        return;
+    Character *c = &g_chars->chars[sel];
+    char wasname[CHAR_NAME_MAX];
+    char wascls[CHAR_CLASS_MAX];
+    int waslvl = c->level;
+    snprintf(wasname, sizeof(wasname), "%s", c->name);
+    snprintf(wascls, sizeof(wascls), "%s", c->cls);
+    int waslfg = c->lfg;
+    chars_remove(g_chars, c->name);
+    populate_chars();
+    /* publish cleared state so others stop seeing them */
+    if (waslfg)
+        sync_publish_char(&g_sync, wasname, wascls, waslvl, "", 0);
+}
+
 static void create_controls(HWND hwnd, HFONT hf)
 {
     g_list = CreateWindowExA(WS_EX_CLIENTEDGE, "LISTBOX", NULL,
                              WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
-                             10, 10, 460, 260, hwnd, (HMENU)ID_LIST, NULL, NULL);
+                             10, 10, 330, 250, hwnd, (HMENU)ID_LIST, NULL, NULL);
+
+    /* ---- my characters panel (right) ---- */
+    CreateWindowA("STATIC", "My Characters", WS_CHILD | WS_VISIBLE,
+                 350, 10, 130, 18, hwnd, NULL, NULL, NULL);
+    g_char_list = CreateWindowExA(WS_EX_CLIENTEDGE, "LISTBOX", NULL,
+                             WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
+                             350, 30, 140, 160, hwnd, (HMENU)ID_CHAR_LIST, NULL, NULL);
+    CreateWindowA("STATIC", "Name:", WS_CHILD | WS_VISIBLE,
+                 350, 198, 34, 16, hwnd, NULL, NULL, NULL);
+    CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                 386, 195, 104, 20, hwnd, (HMENU)ID_CHAR_NAME, NULL, NULL);
+    CreateWindowA("STATIC", "Class:", WS_CHILD | WS_VISIBLE,
+                 350, 222, 34, 16, hwnd, NULL, NULL, NULL);
+    CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                 386, 219, 104, 20, hwnd, (HMENU)ID_CHAR_CLASS, NULL, NULL);
+    CreateWindowA("STATIC", "Level:", WS_CHILD | WS_VISIBLE,
+                 350, 246, 34, 16, hwnd, NULL, NULL, NULL);
+    CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "", WS_CHILD | WS_VISIBLE | ES_NUMBER,
+                 386, 243, 40, 20, hwnd, (HMENU)ID_CHAR_LEVEL, NULL, NULL);
+    CreateWindowA("BUTTON", "Add", WS_CHILD | WS_VISIBLE,
+                 430, 242, 60, 22, hwnd, (HMENU)ID_BTN_CHAR_ADD, NULL, NULL);
+    CreateWindowA("BUTTON", "Toggle LFG", WS_CHILD | WS_VISIBLE,
+                 350, 270, 68, 22, hwnd, (HMENU)ID_BTN_CHAR_LFG, NULL, NULL);
+    CreateWindowA("BUTTON", "Delete", WS_CHILD | WS_VISIBLE,
+                 422, 270, 68, 22, hwnd, (HMENU)ID_BTN_CHAR_DEL, NULL, NULL);
     CreateWindowA("BUTTON", "Refresh",
                   WS_CHILD | WS_VISIBLE, 10, 280, 70, 24, hwnd, (HMENU)ID_BTN_REFRESH, NULL, NULL);
     CreateWindowA("BUTTON", "Change log folder...",
@@ -486,7 +586,7 @@ static void create_controls(HWND hwnd, HFONT hf)
     CreateWindowA("BUTTON", "Show key QR",
                   WS_CHILD | WS_VISIBLE, 160, 340, 90, 22, hwnd, (HMENU)ID_BTN_QR, NULL, NULL);
     g_st_dir = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE,
-                             10, 368, 460, 20, hwnd, (HMENU)ID_ST_DIR, NULL, NULL);
+                             10, 368, 480, 20, hwnd, (HMENU)ID_ST_DIR, NULL, NULL);
 
     HWND ctrl = GetWindow(hwnd, GW_CHILD);
     while (ctrl) {
@@ -833,6 +933,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         create_controls(hwnd, (HFONT)cs->lpCreateParams);
         g_timer = SetTimer(hwnd, 1, 2000, NULL);
         refresh_dir_label(hwnd);
+        populate_chars();
         do_poll();
         return 0;
     }
@@ -884,6 +985,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case ID_BTN_RATE: on_rate(); return 0;
         case ID_BTN_CHAT: on_chat(); return 0;
         case ID_BTN_QR: on_show_qr(); return 0;
+        case ID_BTN_CHAR_ADD: on_char_add(); return 0;
+        case ID_BTN_CHAR_DEL: on_char_del(); return 0;
+        case ID_BTN_CHAR_LFG: on_char_lfg_toggle(); return 0;
         }
         break;
     case WM_DESTROY:
@@ -1005,6 +1109,13 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     char *fsl = strrchr(favpath, '\\');
     if (fsl)
         strcpy(fsl + 1, "p99lfg.favs");
+    char charpath[LFG_PATH_MAX];
+    GetModuleFileNameA(NULL, charpath, sizeof(charpath));
+    char *csl = strrchr(charpath, '\\');
+    if (csl)
+        strcpy(csl + 1, "p99lfg.chars");
+    g_chars = chars_load(charpath);
+
     g_favs = fav_load(favpath);
     g_ratings = rating_store_new();
     strcpy(g_keypath, keypath);
@@ -1024,7 +1135,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
 
     g_hwnd = CreateWindowExA(0, "p99lfg", "p99lfg - Project 1999 LFG",
                              WS_OVERLAPPEDWINDOW,
-                             CW_USEDEFAULT, CW_USEDEFAULT, 500, 445,
+                             CW_USEDEFAULT, CW_USEDEFAULT, 510, 445,
                              NULL, NULL, hInst, hf);
     if (!g_hwnd) {
         log_printf("window creation FAILED (err=%lu)\n", (unsigned long)GetLastError());

@@ -19,7 +19,7 @@ fi
 mkdir -p build
 x86_64-w64-mingw32-gcc -O2 -mconsole -mwindows \
     -Isrc -Ivendor/secp256k1/include -Ivendor/secp256k1/build-mingw/include \
-    src/win32_main.c src/core.c src/sha256.c src/nostr.c src/sync.c src/ws_client.c src/tls_schannel.c src/chat.c src/aes.c src/fav.c src/rating.c vendor/qrcodegen/qrcodegen.c \
+    src/win32_main.c src/core.c src/sha256.c src/nostr.c src/sync.c src/ws_client.c src/tls_schannel.c src/chat.c src/aes.c src/fav.c src/rating.c src/chars.c vendor/qrcodegen/qrcodegen.c \
     vendor/secp256k1/build-mingw/lib/libsecp256k1.a \
     -lgdi32 -luser32 -lcomctl32 -lcomdlg32 -lshell32 -lole32 -lws2_32 -lcrypt32 \
     -o build/p99lfg.exe

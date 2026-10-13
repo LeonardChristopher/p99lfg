@@ -29,6 +29,8 @@ typedef struct {
     char name[64];
     char zone[64];
     char detail[96];
+    char cls[32];
+    int level;
     int lfg;
     uint64_t created_at; /* from the event, 0 if unknown */
 } SyncRemoteEntry;
@@ -65,6 +67,12 @@ size_t sync_build_content(char *out, size_t outsz, const char *name,
                           const char *zone, const char *detail, int lfg);
 
 int sync_publish(SyncState *s, const char *content_json);
+
+/* Publish one character's LFG state as its own replaceable event
+ * (d tag = "server/charname"), so rosters of multiple characters work.
+ * cls = class, level 1-65. zone optional. Returns 0 if a relay accepted. */
+int sync_publish_char(SyncState *s, const char *name, const char *cls,
+                      int level, const char *zone, int lfg);
 
 /* One non-blocking-ish pump: for each relay, connect if needed, send REQ,
  * drain any arrived events into on_event. Call periodically (e.g. 5s). */
