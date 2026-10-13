@@ -30,6 +30,11 @@ struct TlsCtx {
     int dead;
 };
 
+static int tcp_send_all(TlsCtx *t, const void *data, size_t len);
+static int tls_send_impl(TlsCtx *t, const void *data, unsigned int len);
+static int tls_recv_impl(TlsCtx *t, void *data, unsigned int len);
+static void tls_close_impl(TlsCtx *t);
+
 static int tls_connect_impl(const char *host, void *sockp, TlsCtx **out)
 {
     TlsCtx *t = calloc(1, sizeof(TlsCtx));
@@ -171,10 +176,6 @@ fail:
     return -1;
 }
 
-static int tls_send_impl(TlsCtx *t, const void *data, unsigned int len);
-static int tls_recv_impl(TlsCtx *t, void *data, unsigned int len);
-static void tls_close_impl(TlsCtx *t);
-
 int (*tls_connect_hook)(const char *, void *, TlsCtx **) = tls_connect_impl;
 int (*tls_send_hook)(TlsCtx *, const void *, unsigned int) = tls_send_impl;
 int (*tls_recv_hook)(TlsCtx *, void *, unsigned int) = tls_recv_impl;
@@ -191,143 +192,6 @@ static int tcp_send_all(TlsCtx *t, const void *data, size_t len)
         len -= (size_t)n;
     }
     return 0;
-}
-
-static int tls_connect_impl(const char *host, void *sockp, TlsCtx **out)
-{
-    TlsCtx *t = calloc(1, sizeof(TlsCtx));
-    if (!t)
-        return -1;
-    t->sock = (SOCKET)sockp;
-
-    SCHANNEL_CRED cred;
-    memset(&cred, 0, sizeof(cred));
-    cred.dwVersion = SCHANNEL_CRED_VERSION;
-    cred.dwFlags = SCH_CRED_NO_DEFAULT_CREDS | SCH_CRED_MANUAL_CRED_VALIDATION |
-                   SCH_CRED_NO_SERVERNAME_CHECK;
-    cred.grbitEnabledProtocols = 0; /* system defaults */
-
-    SECURITY_STATUS ss = AcquireCredentialsHandleA(NULL, (SEC_CHAR *)"Microsoft Unified Security Protocol Provider",
-        SECPKG_CRED_OUTBOUND, NULL, &cred, NULL, NULL, &t->hcred, NULL);
-    if (ss != SEC_E_OK) {
-        free(t);
-        return -1;
-    }
-
-    SecBufferDesc obd, ibd;
-    SecBuffer obuf[2], ibuf[2];
-    DWORD ctxreq = ISC_REQ_REPLAY_DETECT | ISC_REQ_SEQUENCE_DETECT |
-                    ISC_REQ_CONFIDENTIALITY | ISC_REQ_EXTENDED_ERROR |
-                    ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_STREAM;
-    DWORD ctxattr = 0;
-    int first = 1;
-    unsigned char inbuf[16384];
-    size_t inlen = 0;
-
-    for (;;) {
-        memset(&obd, 0, sizeof(obd));
-        obd.cBuffers = 2;
-        obd.pBuffers = obuf;
-        obuf[0].BufferType = SECBUFFER_TOKEN;
-        obuf[0].cbBuffer = 0;
-        obuf[0].pvBuffer = NULL;
-        obuf[1].BufferType = SECBUFFER_EMPTY;
-
-        memset(&ibd, 0, sizeof(ibd));
-        if (!first) {
-            ibd.cBuffers = 2;
-            ibd.pBuffers = ibuf;
-            ibuf[0].BufferType = SECBUFFER_TOKEN;
-            ibuf[0].cbBuffer = (unsigned long)inlen;
-            ibuf[0].pvBuffer = inbuf;
-            ibuf[1].BufferType = SECBUFFER_EMPTY;
-        }
-
-        ss = InitializeSecurityContextA(&t->hcred,
-            first ? NULL : &t->hctx,
-            (SEC_CHAR *)host,
-            ctxreq,
-            0,
-            0,
-            first ? NULL : &ibd,
-            0,
-            &t->hctx,
-            &obd,
-            &ctxattr,
-            NULL);
-
-        if (ss == SEC_E_OK || ss == SEC_I_CONTINUE_NEEDED) {
-            if (obuf[0].cbBuffer > 0)
-                if (tcp_send_all(t, obuf[0].pvBuffer, obuf[0].cbBuffer) != 0)
-                    goto fail;
-            if (ss == SEC_E_OK)
-                break;
-            first = 0;
-            /* read more handshake data */
-            inlen = 0;
-            for (;;) {
-                int n = recv(t->sock, inbuf + inlen, (int)(sizeof(inbuf) - inlen), 0);
-                if (n <= 0)
-                    goto fail;
-                inlen += (size_t)n;
-                /* try to process what we have */
-                memset(&ibd, 0, sizeof(ibd));
-                ibd.cBuffers = 2;
-                ibd.pBuffers = ibuf;
-                ibuf[0].BufferType = SECBUFFER_TOKEN;
-                ibuf[0].cbBuffer = (unsigned long)inlen;
-                ibuf[0].pvBuffer = inbuf;
-                ibuf[1].BufferType = SECBUFFER_EMPTY;
-                DWORD attr2 = 0;
-                SecBufferDesc obd2;
-                SecBuffer obuf2[2];
-                memset(&obd2, 0, sizeof(obd2));
-                obd2.cBuffers = 2;
-                obd2.pBuffers = obuf2;
-                obuf2[0].BufferType = SECBUFFER_TOKEN;
-                obuf2[1].BufferType = SECBUFFER_EMPTY;
-                ss = InitializeSecurityContextA(&t->hcred, &t->hctx, (SEC_CHAR *)host,
-                    ctxreq, 0, 0, &ibd, 0, &t->hctx, &obd2, &attr2, NULL);
-                if (ss == SEC_E_OK) {
-                    if (obuf2[0].cbBuffer > 0)
-                        tcp_send_all(t, obuf2[0].pvBuffer, obuf2[0].cbBuffer);
-                    goto done;
-                }
-                if (ss == SEC_I_CONTINUE_NEEDED) {
-                    if (obuf2[0].cbBuffer > 0)
-                        tcp_send_all(t, obuf2[0].pvBuffer, obuf2[0].cbBuffer);
-                    if (ibuf[1].BufferType == SECBUFFER_EXTRA)
-                        inlen = ibuf[1].cbBuffer;
-                    continue;
-                }
-                if (ss == SEC_E_INCOMPLETE_MESSAGE)
-                    continue;
-                goto fail;
-            }
-        } else if (ss == SEC_E_INCOMPLETE_MESSAGE) {
-            int n = recv(t->sock, inbuf, (int)sizeof(inbuf), 0);
-            if (n <= 0)
-                goto fail;
-            (void)n;
-            continue;
-        } else {
-            goto fail;
-        }
-    }
-done:
-    QueryContextAttributesA(&t->hctx, SECPKG_ATTR_STREAM_SIZES, &t->sizes);
-    t->encbuf = malloc(t->sizes.cbHeader + 16384 + t->sizes.cbTrailer + 64);
-    if (!t->encbuf)
-        goto fail;
-    t->established = 1;
-    t->dead = 0;
-    *out = t;
-    return 0;
-fail:
-    FreeCredentialsHandle(&t->hcred);
-    free(t->encbuf);
-    free(t);
-    return -1;
 }
 
 static int tls_send_impl(TlsCtx *t, const void *data, unsigned int len)
