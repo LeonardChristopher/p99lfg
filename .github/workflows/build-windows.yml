@@ -18,7 +18,8 @@ jobs:
       - name: Build p99lfg.exe
         run: |
           mkdir build
-          gcc -O2 -DSECP256K1_STATIC -Isrc -Ivendor/secp256k1/include -Ivendor/secp256k1/build/include -Ivendor/qrcodegen src/win32_main.c src/core.c src/sha256.c src/nostr.c src/sync.c src/ws_client.c src/ws_winhttp.c src/chat.c src/aes.c src/fav.c src/rating.c src/chars.c src/channels.c src/settings.c vendor/qrcodegen/qrcodegen.c vendor/secp256k1/build/lib/libsecp256k1.a -Wl,src/app.o -lgdi32 -luser32 -lcomctl32 -lcomdlg32 -lshell32 -lole32 -lws2_32 -lcrypt32 -lsecur32 -lwinhttp -o build/p99lfg.exe
+          windres src/app.rc -O coff -o build/app.res
+          gcc -O2 -DSECP256K1_STATIC -Isrc -Ivendor/secp256k1/include -Ivendor/secp256k1/build/include -Ivendor/qrcodegen src/win32_main.c src/core.c src/sha256.c src/nostr.c src/sync.c src/ws_client.c src/ws_winhttp.c src/chat.c src/aes.c src/fav.c src/rating.c src/chars.c src/channels.c src/settings.c vendor/qrcodegen/qrcodegen.c vendor/secp256k1/build/lib/libsecp256k1.a build/app.res -lgdi32 -luser32 -lcomctl32 -lcomdlg32 -lshell32 -lole32 -lws2_32 -lcrypt32 -lsecur32 -lwinhttp -o build/p99lfg.exe
         shell: cmd
       - name: Run tests
         run: |
