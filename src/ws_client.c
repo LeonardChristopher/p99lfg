@@ -11,6 +11,18 @@
 #include <string.h>
 
 void (*ws_debug_hook)(const char *msg) = NULL;
+
+void ws_dbg_public(const char *fmt, ...)
+{
+    if (!ws_debug_hook)
+        return;
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    ws_debug_hook(buf);
+}
 void (*tls_debug_hook)(const char *msg) = NULL;
 
 static void ws_dbg(const char *fmt, ...)

@@ -48,3 +48,6 @@ void ws_close(WsConn *c);
 
 /* Optional diagnostics sink (set by the app; NULL = silent). */
 extern void (*ws_debug_hook)(const char *msg);
+
+/* public debug helper routed through ws_debug_hook */
+void ws_dbg_public(const char *fmt, ...);

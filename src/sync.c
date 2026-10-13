@@ -310,13 +310,27 @@ void sync_poll(SyncState *s)
         char req[512];
         nostr_req_message("p99lfg-poll", req, sizeof(req));
         ws_send_text(&c, req);
-        for (int m = 0; m < 16; m++) {
+        int got_events = 0;
+        for (int m = 0; m < 40; m++) {
             char buf[8192];
             int n = ws_recv_text(&c, buf, sizeof(buf));
-            if (n <= 0)
+            if (n < 0) {
+                ws_dbg_public("sync: recv error after %d reads (%d events)", m, got_events);
                 break;
-            sync_handle_message(s, buf);
+            }
+            if (n == 0) {
+                ws_dbg_public("sync: connection closed by relay after %d reads (%d events)",
+                       m, got_events);
+                break;
+            }
+            if (got_events == 0 && m >= 38)
+                ws_dbg_public("sync: still no events after %d reads, first msg: %.80s", m, buf);
+            int r = sync_handle_message(s, buf);
+            if (r == 1)
+                got_events++;
         }
+        if (got_events == 0)
+            ws_dbg_public("sync: drained relay with ZERO events parsed");
         ws_close(&c);
     }
 }
