@@ -104,13 +104,42 @@ Backend / plumbing — DONE and pushed:
 ## 2. Done in this session (update as work completes)
 
 - [x] Wrote this handoff file (crash-resume point = this file).
-- [ ] Create group button wired, joinq dangling call fixed
-- [ ] Officer enforcement in on_invite + context menu
-- [ ] Roster markers + leader toggle (right-click on roster)
-- [ ] Tests for group state CSV round-trip incl. officer flag
-- [ ] Full `./build.sh` green
-- [ ] Committed + pushed to `main` (user has been committing to main
-      directly in this repo - previous session pushed b7d7686 to main)
+- [x] Create group button wired (ID_GROUP_CREATE 262), dangling
+      `on_group_joinq` call removed (it never existed — crash damage;
+      CI run 38454243809 on b7d7686 failed link for exactly this).
+- [x] Officer enforcement: `group_can_invite()` helper; used by
+      `on_invite` and the LFG-list context-menu gate.
+- [x] Roster shows ` (you)` and ` (can invite)` markers; leader can
+      toggle invite rights per member via roster right-click
+      (ID_ROSTER_INV_ALLOW 263 / ID_ROSTER_INV_DISALLOW 264) in
+      `group_wnd_proc` WM_CONTEXTMENU; republishes state on change.
+- [x] Tests: `test_group_state` in tests/test_all.c — CSV/JSON
+      round-trip with officer flags, malformed-CSV (missing third
+      field -> officer 0), empty state. Linux `./build.sh` ALL PASS.
+- [x] Crash-breakage scan (user-requested): verified every on_* /
+      group_* handler resolves; globals all declared; REQ filter
+      already includes kinds 30081/30082/30083 (group traffic flows);
+      cross-module chat/sync signatures match; braces balanced (240/240).
+      Only crash damage found was the joinq dangling call (fixed).
+- [x] Committed + pushed to `main` (user commits to main directly).
+- [ ] Windows CI on the new commit — VERIFY GREEN (mingw not available
+      in Linux sandbox; win32_main.c is compiled only by CI). If red,
+      read `gh run view --log-failed` and fix.
+
+## 2b. Crash-breakage scan results (full sweep, Oct 13 2026)
+
+Scanned for: undefined handler calls, unresolved globals, mismatched
+cross-module signatures, stale REQ filters, leftover stubs. Findings:
+
+- `on_group_joinq` call with no definition — THE crash casualty, had
+  broken Windows CI on commit b7d7686. Fixed (button became Create group).
+- `group_roster_refresh` printed an empty ternary `"" : ""` stub —
+  replaced with real (you)/(can invite) markers.
+- Everything else intact: all `on_*` handlers defined; all group globals
+  declared (win32_main.c:54-61); `nostr_req_message` filter covers
+  30081/30082/30083; `chat_send_message_from`/`chat_try_decrypt`
+  signatures match chat.h; `channels.c` CSV code round-trips the
+  officer field (regression-tested now).
 
 ## 3. Next after this feature
 

@@ -228,6 +228,9 @@ static const char *presence_mark(const char *name)
 #define ID_BTN_SETNAME 249
 #define ID_INV_MEMBER 260
 #define ID_INV_WAIT 261
+#define ID_GROUP_CREATE 262
+#define ID_ROSTER_INV_ALLOW 263
+#define ID_ROSTER_INV_DISALLOW 264
 #define ID_BTN_CLEAR 250
 #define ID_BTN_HISTORY 251
 
@@ -403,6 +406,20 @@ static int group_am_host(void)
             snprintf(lowest, sizeof(lowest), "%s", g_group_members[i].pubkey);
     return strcmp(g_sync.pubkey, lowest) == 0;
 }
+static int group_can_invite(void)
+{
+    /* leader can always invite; officers (flag granted by the leader)
+     * can too. The officer flag comes from the roster state event, so
+     * every client enforces the same permission. */
+    if (g_group_is_leader)
+        return 1;
+    if (!g_group_name[0])
+        return 0;
+    for (int i = 0; i < g_group_nmembers; i++)
+        if (strcmp(g_group_members[i].pubkey, g_sync.pubkey) == 0)
+            return g_group_members[i].officer;
+    return 0;
+}
 
 static void group_roster_refresh(void)
 {
@@ -413,9 +430,11 @@ static void group_roster_refresh(void)
     o += (size_t)snprintf(text + o, sizeof(text) - o, "Group (%d/6):\r\n",
                           g_group_nmembers);
     for (int i = 0; i < g_group_nmembers; i++)
-        o += (size_t)snprintf(text + o, sizeof(text) - o, "  %s%s\r\n",
+        o += (size_t)snprintf(text + o, sizeof(text) - o, "  %s%s%s\r\n",
                               g_group_members[i].name,
-                              group_am_host() ? "" : "");
+                              strcmp(g_group_members[i].pubkey, g_sync.pubkey) == 0
+                                  ? " (you)" : "",
+                              g_group_members[i].officer ? " (can invite)" : "");
     if (g_group_nwait > 0) {
         o += (size_t)snprintf(text + o, sizeof(text) - o,
                               "Waiting (%d/2):\r\n", g_group_nwait);
@@ -1302,9 +1321,9 @@ static void on_group_create(HWND dlg)
 /* invite a player (from the LFG list) as member or waitlisted */
 static void on_invite(const char *name, int wait)
 {
-    if (!g_group_name[0] || !g_group_is_leader) {
+    if (!g_group_name[0] || !group_can_invite()) {
         MessageBoxA(g_hwnd,
-                    "Create a group first (Group button -> Create group).",
+                    "Create a group first (Group button -> Create group),\nor ask the leader to grant you invite rights.",
                     "p99lfg", MB_ICONINFORMATION);
         return;
     }
@@ -1378,10 +1397,66 @@ static LRESULT CALLBACK group_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         { on_group_send(dlg); return 0; }
     if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_JOIN)
         { on_group_join(dlg); return 0; }
-    if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_JOINQ)
-        { on_group_joinq(dlg); return 0; }
+    if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_CREATE)
+        { on_group_create(dlg); return 0; }
     if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_LEAVE)
         { on_group_leave(dlg); return 0; }
+    if (msg == WM_CONTEXTMENU && (HWND)wp == g_group_roster) {
+        /* leader right-clicks a member in the roster: toggle invite rights */
+        POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+        POINT client_pt = pt;
+        ScreenToClient(g_group_roster, &client_pt);
+        int idx = -1;
+        if (g_group_is_leader && g_group_nmembers > 0) {
+            int line = HIWORD(SendMessageA(g_group_roster, EM_CHARFROMPOS, 0,
+                                           (LPARAM)&client_pt));
+            char buf[128] = {0};
+            *(WORD *)buf = sizeof(buf) - 1;
+            SendMessageA(g_group_roster, EM_GETLINE, line, (LPARAM)buf);
+            /* skip header lines: 'Group (n/6):' / 'Waiting (n/2):' */
+            char *nm = buf;
+            while (*nm == ' ')
+                nm++;
+            if (strncmp(nm, "Group", 5) != 0 && strncmp(nm, "Waiting", 7) != 0) {
+                char *sp = strchr(nm, ' ');
+                if (sp)
+                    *sp = '\0';
+                for (int i = 0; i < g_group_nmembers; i++)
+                    if (strcmp(g_group_members[i].name, nm) == 0 &&
+                        strcmp(g_group_members[i].pubkey, g_sync.pubkey) != 0) {
+                        idx = i;
+                        break;
+                    }
+            }
+        }
+        if (idx >= 0) {
+            HMENU menu = CreatePopupMenu();
+            char label[96];
+            snprintf(label, sizeof(label), "%s invites",
+                     g_group_members[idx].officer ? "Disallow" : "Allow");
+            AppendMenuA(menu, MF_STRING, g_group_members[idx].officer
+                        ? ID_ROSTER_INV_DISALLOW : ID_ROSTER_INV_ALLOW,
+                        label);
+            int cmd = (int)TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD,
+                                          pt.x, pt.y, 0, dlg, NULL);
+            DestroyMenu(menu);
+            if (cmd == ID_ROSTER_INV_ALLOW || cmd == ID_ROSTER_INV_DISALLOW) {
+                g_group_members[idx].officer =
+                    (cmd == ID_ROSTER_INV_ALLOW) ? 1 : 0;
+                group_state_publish(&g_sync, g_group_name, g_group_members,
+                                    g_group_nmembers, g_group_wait, g_group_nwait);
+                char note[160];
+                snprintf(note, sizeof(note), "--- %s: %s invites ---\r\n",
+                         g_group_members[idx].name,
+                         g_group_members[idx].officer ? "can now" : "no longer can");
+                strncat(g_group_log_text, note,
+                        sizeof(g_group_log_text) - strlen(g_group_log_text) - 1);
+                group_roster_refresh();
+                group_refresh();
+            }
+        }
+        return 0;
+    }
     if (msg == WM_USER + 4)
         { group_refresh(); return 0; }
     return DefWindowProcA(dlg, msg, wp, lp);
@@ -1421,8 +1496,8 @@ static void on_group_window(void)
     g_group_roster = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
                  WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY,
                  420, 40, 200, 220, dlg, (HMENU)ID_GROUP_ROSTER, NULL, NULL);
-    CreateWindowA("BUTTON", "Join group", WS_CHILD | WS_VISIBLE,
-                 420, 270, 95, 26, dlg, (HMENU)ID_GROUP_JOINQ, NULL, NULL);
+    CreateWindowA("BUTTON", "Create group", WS_CHILD | WS_VISIBLE,
+                 420, 270, 95, 26, dlg, (HMENU)ID_GROUP_CREATE, NULL, NULL);
     CreateWindowA("BUTTON", "Leave", WS_CHILD | WS_VISIBLE,
                  525, 270, 95, 26, dlg, (HMENU)ID_GROUP_LEAVE, NULL, NULL);
     HFONT hf = (HFONT)SendMessageA(g_hwnd, WM_GETFONT, 0, 0);
@@ -1784,7 +1859,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         AppendMenuA(menu, MF_STRING, ID_BTN_CHAT, "Chat...");
         AppendMenuA(menu, MF_STRING, ID_BTN_FAV, "Toggle Favourite");
         AppendMenuA(menu, MF_STRING, ID_BTN_RATE, "Rate...");
-        if (g_group_is_leader) {
+        if (group_can_invite()) {
             AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
             AppendMenuA(menu, MF_STRING, ID_INV_MEMBER, "Invite to my group");
             AppendMenuA(menu, MF_STRING, ID_INV_WAIT, "Invite to waitlist");

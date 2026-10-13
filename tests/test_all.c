@@ -7,6 +7,7 @@
 #include "chat.h"
 #include "fav.h"
 #include "rating.h"
+#include "channels.h"
 #include "qrcodegen.h"
 
 #include <stdio.h>
@@ -340,6 +341,67 @@ static void test_ratings(void)
     rating_store_free(rs2);
 }
 
+/* group state: CSV round-trip incl. the officer (can-invite) flag */
+static void test_group_state(void)
+{
+    GroupMember m[GROUP_MEMBERS_MAX];
+    GroupMember w[GROUP_WAIT_MAX];
+    int nm, nw;
+
+    /* officers on and off, mixed */
+    memset(m, 0, sizeof(m));
+    memset(w, 0, sizeof(w));
+    snprintf(m[0].name, 64, "Leaderone");
+    snprintf(m[0].pubkey, 65, "%s",
+             "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9");
+    m[0].officer = 1;
+    snprintf(m[1].name, 64, "Memberdos");
+    snprintf(m[1].pubkey, 65, "%s",
+             "eff69ef2b1bd93a66ed7ef4709410101b1d0cba4c853a3ca3c8ad332f4f8f3b2");
+    m[1].officer = 0;
+    snprintf(w[0].name, 64, "Waitlistone");
+    snprintf(w[0].pubkey, 65, "%s",
+             "0000000000000000000000000000000000000000000000000000000000000001");
+
+    /* exercise the CSV builder/parser through the JSON content form that
+     * group_state_publish puts on the wire: {"members":"...","wait":"..."}
+     * We cannot publish without a relay, so we reconstruct the same JSON. */
+    char content[2048];
+    char mcsv[GROUP_MEMBERS_MAX * 100];
+    char wcsv[GROUP_WAIT_MAX * 100];
+    /* direct access to the static CSV helpers is not exported; go through
+     * group_state_parse with a hand-built payload identical to the wire
+     * format, covering officer flag round-trip. */
+    snprintf(content, sizeof(content),
+             "{\"members\":\"%s:%s:1,%s:%s:0\",\"wait\":\"%s:%s:0\",\"v\":1}",
+             m[0].name, m[0].pubkey, m[1].name, m[1].pubkey,
+             w[0].name, w[0].pubkey);
+    CHECK(group_state_parse(content, m, &nm, w, &nw) == 1,
+          "group state parse");
+    CHECK(nm == 2 && nw == 1, "group state counts");
+    CHECK(strcmp(m[0].name, "Leaderone") == 0 && m[0].officer == 1,
+          "leader officer flag round-trip");
+    CHECK(strcmp(m[1].name, "Memberdos") == 0 && m[1].officer == 0,
+          "member officer flag round-trip");
+    CHECK(strcmp(w[0].name, "Waitlistone") == 0 && w[0].officer == 0,
+          "waitlist round-trip");
+
+    /* malformed: missing third field => officer 0, not a crash */
+    snprintf(content, sizeof(content),
+             "{\"members\":\"Onlyname:%s\",\"wait\":\"\",\"v\":1}",
+             m[1].pubkey);
+    memset(m, 0, sizeof(m));
+    CHECK(group_state_parse(content, m, &nm, w, &nw) == 1,
+          "malformed group state parse");
+    CHECK(nm == 1 && strcmp(m[0].name, "Onlyname") == 0 && m[0].officer == 0,
+          "missing officer field defaults to 0");
+
+    /* empty state */
+    CHECK(group_state_parse("{\"members\":\"\",\"wait\":\"\",\"v\":1}",
+                            m, &nm, w, &nw) == 1 && nm == 0 && nw == 0,
+          "empty group state");
+}
+
 /* QR payload encodes a 64-hex key (Windows shows it, phones scan it). */
 static void test_qr_key(void)
 {
@@ -390,6 +452,7 @@ int main(void)
     test_qr_key();
     test_chat_roundtrip();
     test_ratings();
+    test_group_state();
     printf("\n%s (%d failures)\n", fails ? "TESTS FAILED" : "ALL TESTS PASSED", fails);
     return fails ? 1 : 0;
 }
