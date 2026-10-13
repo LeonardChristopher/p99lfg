@@ -300,7 +300,7 @@ int chat_send_message_from(SyncState *s, const char *peer_pubkey_hex,
         ws_close(&c);
     }
     return ok > 0 ? 0 : -1;
-
+}
 
 int chat_send_message(SyncState *s, const char *peer_pubkey_hex,
                       const char *message)
