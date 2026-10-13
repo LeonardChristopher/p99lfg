@@ -1236,9 +1236,29 @@ static void on_group_joinq(HWND dlg)
     char myname[64] = "Player";
     if (g_chars && g_chars->count > 0)
         snprintf(myname, sizeof(myname), "%s", g_chars->chars[0].name);
-    if (group_control_send(&g_sync, g_group_name, myname, g_sync.pubkey, 0) != 0)
-        MessageBoxA(dlg, "Send failed (no relay reachable).", "p99lfg",
-                    MB_ICONINFORMATION);
+
+    /* apply the join locally first (deterministic, no round-trip):
+     * member if space, else waitlist; then publish state + notify */
+    int already = 0;
+    for (int i = 0; i < g_group_nmembers; i++)
+        if (strcmp(g_group_members[i].pubkey, g_sync.pubkey) == 0)
+            already = 1;
+    if (!already) {
+        GroupMember m;
+        memset(&m, 0, sizeof(m));
+        snprintf(m.name, sizeof(m.name), "%s", myname);
+        snprintf(m.pubkey, sizeof(m.pubkey), "%s", g_sync.pubkey);
+        if (g_group_nmembers < GROUP_MEMBERS_MAX) {
+            g_group_members[g_group_nmembers++] = m;
+        } else if (g_group_nwait < GROUP_WAIT_MAX) {
+            g_group_wait[g_group_nwait++] = m;
+        }
+        group_state_publish(&g_sync, g_group_name, g_group_members,
+                           g_group_nmembers, g_group_wait, g_group_nwait);
+    }
+    /* also announce the join on the channel for live notification */
+    group_control_send(&g_sync, g_group_name, myname, g_sync.pubkey, 0);
+    group_roster_refresh();
 }
 
 static void on_group_leave(HWND dlg)
