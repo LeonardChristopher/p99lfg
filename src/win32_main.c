@@ -205,6 +205,8 @@ static const char *presence_mark(const char *name)
 #define ID_GROUP_LEAVE 247
 #define ID_GROUP_ROSTER 248
 #define ID_BTN_SETNAME 249
+#define ID_BTN_CLEAR 250
+#define ID_BTN_HISTORY 251
 
 static FILE *g_log;
 static int g_debug;
@@ -642,43 +644,6 @@ static void populate_list(void)
             }
         }
     }
-    /* history: known players whose entries expired (not currently LFG) */
-    {
-        int hist_count = 0;
-        for (int i = 0; i < g_npresence; i++) {
-            int in_list = 0;
-            for (int j = 0; j < lfg_count(g_state); j++) {
-                const LfgEntry *e = lfg_get(g_state, j);
-                if (strcmp(e->name, g_presence[i].name) == 0) {
-                    in_list = 1;
-                    break;
-                }
-            }
-            if (!in_list && g_presence[i].pubkey[0] &&
-                g_presence[i].last_seen > 0) {
-                if (hist_count == 0)
-                    SendMessageA(g_list, LB_ADDSTRING, 0,
-                                 (LPARAM)"--- Recently seen ---");
-                char row[256];
-                char when[32] = "";
-                uint64_t age = (uint64_t)time(NULL) - g_presence[i].last_seen;
-                if (age < 3600)
-                    snprintf(when, sizeof(when), "%llum ago",
-                             (unsigned long long)(age / 60));
-                else
-                    snprintf(when, sizeof(when), "%lluh ago",
-                             (unsigned long long)(age / 3600));
-                snprintf(row, sizeof(row), "%s%s  [%s]  %s",
-                         presence_mark(g_presence[i].name),
-                         g_presence[i].name,
-                         g_presence[i].cls[0] ? g_presence[i].cls : "?",
-                         when);
-                if (hist_count == 0)
-                    hist_count = 1;
-                SendMessageA(g_list, LB_ADDSTRING, 0, (LPARAM)row);
-            }
-        }
-    }
     if (reselect != LB_ERR)
         SendMessageA(g_list, LB_SETCURSEL, (WPARAM)reselect, 0);
 }
@@ -870,6 +835,10 @@ static void create_controls(HWND hwnd, HFONT hf)
                   WS_CHILD | WS_VISIBLE, 220, 470, 90, 22, hwnd, (HMENU)ID_BTN_QR, NULL, NULL);
     CreateWindowA("BUTTON", "Set name",
                   WS_CHILD | WS_VISIBLE, 315, 470, 75, 22, hwnd, (HMENU)ID_BTN_SETNAME, NULL, NULL);
+    CreateWindowA("BUTTON", "Clear list",
+                  WS_CHILD | WS_VISIBLE, 395, 470, 75, 22, hwnd, (HMENU)ID_BTN_CLEAR, NULL, NULL);
+    CreateWindowA("BUTTON", "History",
+                  WS_CHILD | WS_VISIBLE, 475, 470, 70, 22, hwnd, (HMENU)ID_BTN_HISTORY, NULL, NULL);
     g_st_dir = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE,
                              10, 500, 690, 20, hwnd, (HMENU)ID_ST_DIR, NULL, NULL);
 
@@ -1386,6 +1355,82 @@ static BOOL list_pick_row(POINT pt)
     return TRUE;
 }
 
+static void on_clear_list(void)
+{
+    /* wipe non-favourite entries (manual + log-scan + expired remotes);
+     * remote players come back on their next event */
+    lfg_remove_manual_all(g_state);
+    /* also purge log-derived entries by clearing the in-memory list */
+    for (int i = lfg_count(g_state) - 1; i >= 0; i--) {
+        const LfgEntry *e = lfg_get(g_state, i);
+        if (g_favs && fav_has(g_favs, e->name))
+            continue;
+        char namebuf[64];
+        snprintf(namebuf, sizeof(namebuf), "%s", e->name);
+        lfg_remove(g_state, namebuf);
+    }
+    populate_list();
+}
+
+/* ---- history window: known players not seen in >= 1 hour ---- */
+#define HISTORY_STALE_SECS 3600
+static HWND g_hist_wnd, g_hist_list;
+
+static void history_populate(void)
+{
+    if (!g_hist_list)
+        return;
+    SendMessageA(g_hist_list, LB_RESETCONTENT, 0, 0);
+    for (int i = 0; i < g_npresence; i++) {
+        if (!g_presence[i].pubkey[0] || g_presence[i].last_seen == 0)
+            continue;
+        uint64_t age = (uint64_t)time(NULL) - g_presence[i].last_seen;
+        if (age < HISTORY_STALE_SECS)
+            continue;
+        char row[256];
+        char when[32];
+        if (age < 86400)
+            snprintf(when, sizeof(when), "%lluh", (unsigned long long)(age / 3600));
+        else
+            snprintf(when, sizeof(when), "%llud", (unsigned long long)(age / 86400));
+        snprintf(row, sizeof(row), "%s  [%s]  seen %s ago",
+                 g_presence[i].name,
+                 g_presence[i].cls[0] ? g_presence[i].cls : "?",
+                 when);
+        SendMessageA(g_hist_list, LB_ADDSTRING, 0, (LPARAM)row);
+    }
+}
+
+static void on_history_window(void)
+{
+    if (g_hist_wnd) {
+        history_populate();
+        ShowWindow(g_hist_wnd, SW_SHOWNORMAL);
+        SetForegroundWindow(g_hist_wnd);
+        return;
+    }
+    WNDCLASSA wc = {0};
+    wc.lpfnWndProc = DefWindowProcA;
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = "p99lfg_hist";
+    RegisterClassA(&wc);
+    RECT pr;
+    GetWindowRect(g_hwnd, &pr);
+    g_hist_wnd = CreateWindowExA(0, "p99lfg_hist",
+                                 "History - players offline 1h+",
+                                 WS_OVERLAPPEDWINDOW,
+                                 pr.right - 380, pr.top + 60, 360, 400,
+                                 g_hwnd, NULL, NULL, NULL);
+    g_hist_list = CreateWindowExA(WS_EX_CLIENTEDGE, "LISTBOX", NULL,
+                                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
+                                 10, 10, 320, 340, g_hist_wnd, (HMENU)252, NULL, NULL);
+    HFONT hf = (HFONT)SendMessageA(g_hwnd, WM_GETFONT, 0, 0);
+    SendMessageA(g_hist_list, WM_SETFONT, (WPARAM)hf, TRUE);
+    ShowWindow(g_hist_wnd, SW_SHOW);
+    history_populate();
+}
+
 static LRESULT CALLBACK name_wnd_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
 {
     if (msg == WM_COMMAND && LOWORD(wp) == IDOK) {
@@ -1491,6 +1536,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case ID_BTN_CHAT: on_chat(); return 0;
         case ID_GROUP_TAB: on_group_window(); return 0;
         case ID_BTN_SETNAME: on_set_name(); return 0;
+        case ID_BTN_CLEAR: on_clear_list(); return 0;
+        case ID_BTN_HISTORY: on_history_window(); return 0;
         case ID_BTN_QR: on_show_qr(); return 0;
         case ID_BTN_CHAR_ADD: on_char_add(); return 0;
         case ID_BTN_CHAR_DEL: on_char_del(); return 0;
