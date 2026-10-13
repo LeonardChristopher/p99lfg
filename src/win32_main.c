@@ -1675,7 +1675,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         break;
     case WM_DESTROY:
-        {
         g_sync_thread_run = 0;
         if (g_sync_thread)
             WaitForSingleObject(g_sync_thread, 6000);
