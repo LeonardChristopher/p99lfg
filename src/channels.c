@@ -80,7 +80,7 @@ int channel_send(SyncState *s, const char *channel, const char *from_char,
     if (nostr_sign_event(&ev, s->privkey) != 0)
         return -1;
 
-    char msg[2048];
+    char msg[4200];
     nostr_event_message(&ev, msg, sizeof(msg));
     return sync_send_event(s, msg);
 }
@@ -174,8 +174,8 @@ int group_state_publish(SyncState *s, const char *channel,
                         GroupMember *members, int nm,
                         GroupMember *wait, int nw)
 {
-    char mcsv[GROUP_MEMBERS_MAX * 100];
-    char wcsv[GROUP_WAIT_MAX * 100];
+    char mcsv[GROUP_MEMBERS_MAX * 200];
+    char wcsv[GROUP_WAIT_MAX * 200];
     group_members_to_csv(members, nm, mcsv, sizeof(mcsv));
     group_members_to_csv(wait, nw, wcsv, sizeof(wcsv));
 
@@ -190,7 +190,7 @@ int group_state_publish(SyncState *s, const char *channel,
              mcsv, wcsv);
     if (nostr_sign_event(&ev, s->privkey) != 0)
         return -1;
-    char msg[2048];
+    char msg[4200];
     nostr_event_message(&ev, msg, sizeof(msg));
     return sync_send_event(s, msg);
 }
@@ -199,8 +199,8 @@ int group_state_parse(const char *content,
                       GroupMember *members, int *nm,
                       GroupMember *wait, int *nw)
 {
-    char mcsv[GROUP_MEMBERS_MAX * 100] = "";
-    char wcsv[GROUP_WAIT_MAX * 100] = "";
+    char mcsv[GROUP_MEMBERS_MAX * 200] = "";
+    char wcsv[GROUP_WAIT_MAX * 200] = "";
     if (json_get_string(content, "members", mcsv, sizeof(mcsv)) < 0)
         return 0;
     json_get_string(content, "wait", wcsv, sizeof(wcsv));
@@ -223,7 +223,7 @@ int group_control_send(SyncState *s, const char *channel,
              name, pubkey);
     if (nostr_sign_event(&ev, s->privkey) != 0)
         return -1;
-    char msg[2048];
+    char msg[4200];
     nostr_event_message(&ev, msg, sizeof(msg));
     return sync_send_event(s, msg);
 }
@@ -244,7 +244,7 @@ int profile_announce(SyncState *s, const char *displayname)
     snprintf(ev.content, sizeof(ev.content), "{\"user\":\"%s\"}", displayname);
     if (nostr_sign_event(&ev, s->privkey) != 0)
         return -1;
-    char msg[2048];
+    char msg[4200];
     nostr_event_message(&ev, msg, sizeof(msg));
     return sync_send_event(s, msg);
 }

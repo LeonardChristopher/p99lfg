@@ -268,7 +268,7 @@ int sync_handle_message(SyncState *s, const char *msg)
                  strcmp(kindstr, "9") == 0 || strcmp(kindstr, "30081") == 0 ||
                  strcmp(kindstr, "30082") == 0)
                 && s->on_generic) {
-                char content[600], pubkey[80], dtag[140];
+                char content[2200], pubkey[80], dtag[140];
                 uint64_t created = 0;
                 if (json_get_string(evobj, "content", content, sizeof(content)) >= 0 &&
                     json_get_string(evobj, "pubkey", pubkey, sizeof(pubkey)) >= 0) {
@@ -304,7 +304,7 @@ int sync_handle_message(SyncState *s, const char *msg)
         }
     }
 
-    char content[600];
+    char content[2200];
     if (json_get_string(evobj, "content", content, sizeof(content)) < 0)
         return -1;
     char pubkey[80];

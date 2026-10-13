@@ -451,6 +451,37 @@ static void test_group_state(void)
     CHECK(group_state_parse("{\"members\":\"\",\"wait\":\"\",\"v\":1}",
                             m, &nm, w, &nw) == 1 && nm == 0 && nw == 0,
           "empty group state");
+
+    /* full-size roster must round-trip without truncation: 6 members +
+     * 2 wait, long names + full pubkeys ~1092 bytes of CSV. The event
+     * content field was once 512 bytes and silently truncated this. */
+    GroupMember big[GROUP_MEMBERS_MAX];
+    GroupMember bigw[GROUP_WAIT_MAX];
+    memset(big, 0, sizeof(big));
+    memset(bigw, 0, sizeof(bigw));
+    char csvbig[2048];
+    size_t ob = 0;
+    const char *pk64 =
+        "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9";
+    for (int i = 0; i < GROUP_MEMBERS_MAX; i++)
+        ob += (size_t)snprintf(csvbig + ob, sizeof(csvbig) - ob, "%s%s%sember%02d:%s:%d",
+                                i ? "," : "", "LongCharacter", "Name", i, pk64,
+                                i % 2);
+    for (int i = 0; i < GROUP_WAIT_MAX; i++)
+        ob += (size_t)snprintf(csvbig + ob, sizeof(csvbig) - ob,
+                               ",WaitlistedPlayer%02d:%s:0", i, pk64);
+    char bigcontent[2048];
+    snprintf(bigcontent, sizeof(bigcontent),
+             "{\"members\":\"%s\",\"wait\":\"\",\"v\":1}", csvbig);
+    CHECK(strlen(bigcontent) < sizeof(NostrEvent) && 1, "sanity");
+    int bn, bw;
+    CHECK(group_state_parse(bigcontent, big, &bn, bigw, &bw) == 1,
+          "full 6-member roster parses");
+    CHECK(bn == GROUP_MEMBERS_MAX, "full roster member count untruncated");
+    CHECK(strcmp(big[5].name, "LongCharacterNameember05") == 0,
+          "full roster last member intact");
+    CHECK(big[1].officer == 1 && big[0].officer == 0,
+          "full roster officer flags intact");
 }
 
 /* QR payload encodes a 64-hex key (Windows shows it, phones scan it). */

@@ -173,7 +173,7 @@ int nostr_import_key(const char *path, const char *privkey_hex,
 
 void nostr_serialize_for_id(const NostrEvent *ev, char *out, size_t outsz)
 {
-    char esc_content[1024];
+    char esc_content[4096];
     json_escape(ev->content, esc_content, sizeof(esc_content));
     if (ev->ptag[0]) {
         /* kind-4 DM: p tag for the recipient, t tag so our REQ filter matches */
@@ -228,7 +228,7 @@ int nostr_sign_event(NostrEvent *ev, const char *privkey_hex)
 
 size_t nostr_event_message(const NostrEvent *ev, char *out, size_t outsz)
 {
-    char esc_content[1024];
+    char esc_content[4096];
     json_escape(ev->content, esc_content, sizeof(esc_content));
     if (ev->ptag[0]) {
         return (size_t)snprintf(out, outsz,

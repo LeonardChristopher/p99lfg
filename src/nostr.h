@@ -20,7 +20,10 @@ typedef struct {
     char pubkey[NOSTR_PUBKEY_HEX];
     uint64_t created_at;
     int kind;
-    char content[512];
+    /* 2048: a full 6-member + 2-wait roster CSV is ~1092 bytes raw and
+     * must never truncate mid-JSON (truncation corrupts the parsed
+     * roster). Escape buffers scale with it (2x + slack). */
+    char content[2048];
     char sig[NOSTR_SIG_HEX];
     char dtag[128];
     /* kind-4 DM only: recipient pubkey tag ("p"). Empty for LFG events. */

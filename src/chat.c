@@ -9,6 +9,10 @@
 #include "sha256.h"
 #include "ws_client.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#include <wincrypt.h>
+#endif
 #include <secp256k1.h>
 #include <secp256k1_ecdh.h>
 #include <secp256k1_extrakeys.h>
@@ -104,9 +108,15 @@ static int from_hex(const char *in, uint8_t *out, size_t outlen)
 static int random_bytes(uint8_t *out, size_t len)
 {
 #ifdef _WIN32
-    for (size_t i = 0; i < len; i++)
-        out[i] = (uint8_t)(rand() ^ (unsigned)(i * 31 + 7) ^ GetTickCount());
-    return 0;
+    /* IVs must be unpredictable: use the CSPRNG like nostr.c does,
+     * never rand() (predictable -> DM encryption weaker than it looks). */
+    HCRYPTPROV h = 0;
+    if (CryptAcquireContextA(&h, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT)) {
+        CryptGenRandom(h, (DWORD)len, out);
+        CryptReleaseContext(h, 0);
+        return 0;
+    }
+    return -1;
 #else
     int fd = open("/dev/urandom", O_RDONLY);
     if (fd < 0)
@@ -287,7 +297,7 @@ int chat_send_message_from(SyncState *s, const char *peer_pubkey_hex,
     snprintf(ev.ptag, sizeof(ev.ptag), "%s", peer_pubkey_hex);
     if (nostr_sign_event(&ev, s->privkey) != 0)
         return -1;
-    char msg[2048];
+    char msg[4200];
     nostr_event_message(&ev, msg, sizeof(msg));
     int ok = 0;
     for (int i = 0; i < s->nrelays; i++) {

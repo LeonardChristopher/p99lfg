@@ -261,8 +261,26 @@ Full relay probe (node, all kinds #t p99lfg) revealed:
   fix (dedup scoping) landed in the 20:58 build 68db02f. Users MUST
   update BOTH clients; old+new mix reproduces old bugs.
 
-## 5. Code review findings (Oct 13, post round-5, NOT yet fixed — pick
-these up next session; user is resting from testing)
+## 5. Code review findings (Oct 13, post round-5)
+
+QUICK WINS LANDED (round 6, while user resting - commit log has details):
+
+- [x] #1 content truncation: NostrEvent.content 512 -> 2048; escape
+      buffers 1024 -> 4096; event-message buffers 2048 -> 4200;
+      sync.c receive content[600] -> 2200; channels.c csv buffers
+      600 -> 1200/400. Regression test: full 6-member roster round-trips
+      untruncated.
+- [x] #2 self-echo: kind-9 group chat handler now skips own pubkey
+      (was appending your own messages a second time on the next poll).
+- [x] auto-scroll: chat_refresh + group_refresh now EM_SETSEL/EM_SCROLLCARET
+      to bottom (SetWindowTextA used to snap the view to the top every
+      refresh - user had to scroll down after every message).
+- [x] input caps: EM_SETLIMITTEXT 500 on both chat inputs (matches what
+      can actually be sent).
+- [x] #3 DM IV randomness: chat.c random_bytes now uses
+      CryptGenRandom on Windows (was rand()^GetTickCount - predictable).
+
+REMAINING from review (not yet fixed):
 
 Bugs found, by severity:
 

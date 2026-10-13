@@ -253,7 +253,7 @@ int rating_publish(SyncState *s, const char *target_pubkey,
              competent, friendly, listens);
     if (nostr_sign_event(&ev, s->privkey) != 0)
         return -1;
-    char msg[2048];
+    char msg[4200];
     nostr_event_message(&ev, msg, sizeof(msg));
     return sync_send_event(s, msg);
 }
@@ -270,7 +270,7 @@ int vote_publish(SyncState *s, const char *rating_id, int agree)
     snprintf(ev.content, sizeof(ev.content), "{\"agree\":%s}", agree ? "true" : "false");
     if (nostr_sign_event(&ev, s->privkey) != 0)
         return -1;
-    char msg[2048];
+    char msg[4200];
     nostr_event_message(&ev, msg, sizeof(msg));
     return sync_send_event(s, msg);
 }

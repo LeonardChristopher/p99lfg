@@ -608,7 +608,12 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
             }
         }
         /* group/raid channel message. dtag = "p99lfg-g-<channel>",
-         * content = {"from":"Char","msg":"text"} (from may be absent) */
+         * content = {"from":"Char","msg":"text"} (from may be absent).
+         * Skip our own messages: they were appended locally at send
+         * time; the relay copy comes back on the next poll and would
+         * double them. */
+        if (strcmp(pubkey, g_sync.pubkey) == 0)
+            return;
         if (!g_group_name[0])
             return;
         const char *chsuffix = strstr(dtag, "p99lfg-g-");
@@ -1143,6 +1148,10 @@ static void chat_refresh(void)
     if (g_chat_edit) {
         ChatPeer *peer = chat_peer_active();
         SetWindowTextA(g_chat_edit, peer ? peer->log : "");
+        /* SetWindowText resets the view to the top; keep the newest
+         * line visible without the user scrolling every message. */
+        SendMessageA(g_chat_edit, EM_SETSEL, (WPARAM)-1, (LPARAM)-1);
+        SendMessageA(g_chat_edit, EM_SCROLLCARET, 0, 0);
     }
 }
 
@@ -1262,6 +1271,7 @@ static void on_chat(void)
                  10, 240, 300, 24, dlg, (HMENU)ID_CHAT_INPUT, NULL, NULL);
     g_chat_input_proc = (WNDPROC)SetWindowLongPtrA(g_chat_input, GWLP_WNDPROC,
                                                    (LONG_PTR)chat_input_subclassProc);
+    SendMessageA(g_chat_input, EM_SETLIMITTEXT, 500, 0);
     CreateWindowA("BUTTON", "Send", WS_CHILD | WS_VISIBLE,
                  315, 238, 75, 26, dlg, (HMENU)ID_CHAT_SEND, NULL, NULL);
     CreateWindowA("STATIC", "Send as:", WS_CHILD | WS_VISIBLE,
@@ -1314,8 +1324,11 @@ static LRESULT CALLBACK chat_input_subclassProc(HWND h, UINT msg, WPARAM wp, LPA
 
 static void group_refresh(void)
 {
-    if (g_group_log)
+    if (g_group_log) {
         SetWindowTextA(g_group_log, g_group_log_text);
+        SendMessageA(g_group_log, EM_SETSEL, (WPARAM)-1, (LPARAM)-1);
+        SendMessageA(g_group_log, EM_SCROLLCARET, 0, 0);
+    }
 }
 
 static void on_group_send(HWND dlg)
@@ -1585,6 +1598,7 @@ static void on_group_window(void)
                  10, 310, 320, 24, dlg, (HMENU)ID_GROUP_INPUT, NULL, NULL);
     g_group_input_proc = (WNDPROC)SetWindowLongPtrA(g_group_input, GWLP_WNDPROC,
                                                     (LONG_PTR)group_input_subclassProc);
+    SendMessageA(g_group_input, EM_SETLIMITTEXT, 500, 0);
     CreateWindowA("BUTTON", "Send", WS_CHILD | WS_VISIBLE,
                  335, 308, 75, 26, dlg, (HMENU)ID_GROUP_SEND, NULL, NULL);
     /* group roster + join/leave */
