@@ -384,6 +384,28 @@ static void on_dm(const char *sender_pubkey, const char *content, void *ud)
     char plain[1024];
     if (chat_try_decrypt(g_sync.privkey, sender_pubkey, content, plain, sizeof(plain)) != 0)
         return;
+    /* unwrap {"from":"Name","msg":"text"} to get the raw message:
+     * protocol prefixes like GROUPINV: live in msg (chat.c returns
+     * the payload raw; the envelope is display-only) */
+    char msgbuf[1024] = "";
+    const char *msg = plain;
+    char frombuf[64] = "";
+    if (strncmp(plain, "{\"from\":", 8) == 0) {
+        const char *f = plain + 8;
+        const char *fe = strchr(f, '"');
+        if (fe && (size_t)(fe - f) < sizeof(frombuf)) {
+            memcpy(frombuf, f, (size_t)(fe - f));
+            const char *m = strstr(fe, ",\"msg\":\"");
+            if (m) {
+                m += 8;
+                const char *me = strrchr(m, '"');
+                if (me && (size_t)(me - m) < sizeof(msgbuf)) {
+                    memcpy(msgbuf, m, (size_t)(me - m));
+                    msg = msgbuf;
+                }
+            }
+        }
+    }
     /* find the sender's display name from the roster */
     char sender_name[64] = "";
     for (int i = 0; i < g_npresence; i++)
@@ -394,11 +416,11 @@ static void on_dm(const char *sender_pubkey, const char *content, void *ud)
     if (!sender_name[0])
         snprintf(sender_name, sizeof(sender_name), "%.12s", sender_pubkey);
 
-    if (strncmp(plain, "GROUPINV:", 9) == 0) {
+    if (strncmp(msg, "GROUPINV:", 9) == 0) {
         /* group invite via DM: GROUPINV:<channel>:<role> */
         char ch[CHANNEL_NAME_MAX] = "";
         char role[16] = "member";
-        const char *p = plain + 9;
+        const char *p = msg + 9;
         const char *c1 = strchr(p, ':');
         if (c1) {
             size_t n = (size_t)(c1 - p);
@@ -425,10 +447,15 @@ static void on_dm(const char *sender_pubkey, const char *content, void *ud)
         PostMessageA(g_hwnd, WM_INVITEPOPUP, 1, 0);
         return;
     }
-    /* always append to the sender's own history */
+    /* always append to the sender's own history; the envelope was
+     * unwrapped above so msg/frombuf carry the display pieces */
     ChatPeer *peer = chat_peer_get(sender_pubkey, sender_name);
-    strncat(peer->log, "Them: ", sizeof(peer->log) - strlen(peer->log) - 1);
-    strncat(peer->log, plain, sizeof(peer->log) - strlen(peer->log) - 1);
+    char dispbuf[1100];
+    if (frombuf[0])
+        snprintf(dispbuf, sizeof(dispbuf), "Them [%s]: %s", frombuf, msg);
+    else
+        snprintf(dispbuf, sizeof(dispbuf), "Them: %s", msg);
+    strncat(peer->log, dispbuf, sizeof(peer->log) - strlen(peer->log) - 1);
     strncat(peer->log, "\r\n", sizeof(peer->log) - strlen(peer->log) - 1);
 
     if (strcmp(g_chat_with, sender_pubkey) != 0) {

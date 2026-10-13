@@ -354,25 +354,11 @@ int chat_try_decrypt(const char *privkey_hex, const char *sender_pubkey_hex,
         return -1;
     if (decrypt_content(key, content, out, outsz) != 0)
         return -1;
-    /* unwrap {"from":"Name","msg":"text"} if present */
-    if (strncmp(out, "{\"from\":", 8) == 0) {
-        char frombuf[64] = "", msgbuf[1024] = "";
-        const char *f = out + 8;
-        const char *fe = strchr(f, '"');
-        if (fe && (size_t)(fe - f) < sizeof(frombuf)) {
-            memcpy(frombuf, f, (size_t)(fe - f));
-            const char *m = strstr(fe, ",\"msg\":\"");
-            if (m) {
-                m += 8;
-                const char *me = strrchr(m, '"');
-                if (me && (size_t)(me - m) < sizeof(msgbuf)) {
-                    memcpy(msgbuf, m, (size_t)(me - m));
-                    snprintf(out, outsz, "[%s] %s",
-                             frombuf[0] ? frombuf : "?", msgbuf);
-                }
-            }
-        }
-    }
+    /* Leave the payload raw: callers must be able to match protocol
+     * prefixes like "GROUPINV:". The {"from":..,"msg":..} envelope is
+     * unwrapped by the UI for display (chat.c used to rewrite it here
+     * into "[Name] text", which broke on_dm's GROUPINV detection -
+     * caught by the automated harness). */
     return 0;
 }
 

@@ -358,8 +358,19 @@ Direction confirmed by the user for the next phase of work:
 
 ## 7. Work order while user is away
 
-- [ ] Automated two-instance group-flow harness (highest leverage -
-      verifies everything after it without the user)
+- [x] Automated two-instance group-flow harness - DONE (round 7):
+      tests/test_group_flow.c, wired into build.sh. Persistent loopback
+      fake relay (stores events, per-frame REQ replies), two SyncState
+      clients run create/invite/join/chat/full-roster end-to-end.
+      16 checks, all green. **IT FOUND A REAL BUG ON FIRST RUN**:
+      chat_try_decrypt rewrote the payload into "[Name] text" display
+      form BEFORE on_dm's GROUPINV: prefix check -> invites sent with a
+      character name (the normal leader flow!) never matched, so invite
+      popups/joins were flaky. Fix: decrypt returns the raw payload;
+      on_dm unwraps the {"from":..,"msg":..} envelope itself and checks
+      GROUPINV on the inner msg; DM history display uses the unwrapped
+      pieces. LESSON: the invite flow can now be regression-tested
+      headlessly - every future change to it gets caught here.
 - [ ] Timestamps in group + DM chat lines
 - [ ] Persistent relay connection (phased: keep poll as fallback,
       add persistent subscribe + reconnect/backoff; then retire poll)
