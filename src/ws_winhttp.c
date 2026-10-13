@@ -153,6 +153,8 @@ int ws_winhttp_recv_text(WsConn *c, char *out, size_t outsz)
     for (int attempt = 0; attempt < 20; attempt++) {
         DWORD readn = 0;
         WINHTTP_WEB_SOCKET_BUFFER_TYPE type;
+        /* WinHTTP WebSocket APIs return the error code DIRECTLY (not via
+         * GetLastError): ERROR_WINHTTP_TIMEOUT = 12002 etc. */
         DWORD r = WinHttpWebSocketReceive(w->ws, out, (DWORD)outsz - 1, &readn, &type);
         if (r == NO_ERROR) {
             if (type == WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE)
@@ -160,12 +162,11 @@ int ws_winhttp_recv_text(WsConn *c, char *out, size_t outsz)
             out[readn] = '\0';
             return (int)readn;
         }
-        DWORD gle = GetLastError();
-        if (gle == ERROR_WINHTTP_TIMEOUT) {
+        if (r == ERROR_WINHTTP_TIMEOUT) {
             Sleep(250); /* relay hasn't answered yet; keep waiting */
             continue;
         }
-        ws_dbg_safe("winhttp: recv failed gle=%lu", (unsigned long)gle);
+        ws_dbg_safe("winhttp: recv failed code=%lu", (unsigned long)r);
         return -1;
     }
     /* waited ~5s with nothing: treat as end of stream for this poll */
