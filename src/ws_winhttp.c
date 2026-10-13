@@ -111,9 +111,9 @@ int ws_winhttp_connect(WsConn *c, const WsUrl *url)
     w->ws = WinHttpWebSocketCompleteUpgrade(w->request, 0);
     if (!w->ws)
         goto fail;
-    /* the request handle is no longer needed */
-    WinHttpCloseHandle(w->request);
-    w->request = NULL;
+    /* NOTE: the request handle is kept open until close - closing it right
+     * after the upgrade kills the connection on some Windows builds (receive
+     * then fails instantly with ERROR_WINHTTP_CONNECTION_ERROR) */
 
     c->tls = (TlsCtx *)(uintptr_t)w; /* reuse the pointer slot */
     c->connected = 1;
