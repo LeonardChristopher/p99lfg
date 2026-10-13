@@ -219,6 +219,36 @@ their presence, and they're not freeloaders.
    "Relay one raid = priority voice for the rest of the night."
 3. Roles always outrank credits; credits outrank luck; nobody muted.
 
+### 4.5 Multi-device identity & the relay appliance (user's extension)
+
+The QR identity sharing already shipped means one Nostr identity can
+span multiple devices — and one of those devices can be a *relay
+appliance*: a machine whose whole job is contributing capacity.
+
+- **Enrollment:** appliance scans the same key QR (or imports the key
+  file) — it IS the user's identity. Its witnessed relay performance
+  therefore accrues mic-priority credit to the user's identity. Run a
+  relay bot on your always-on box, get claim priority on your gaming
+  desktop. Coherent reward loop with zero new machinery.
+- **Form factor:** a build flag or separate tiny binary from the same
+  codebase (`p99lfg --relay`): subscribes to raid channels, announces
+  `up_kbps` + `device=relay` in presence, volunteers for the relay tier.
+  Same CI, zero extra maintenance.
+- **NAT:** an appliance is deliberately stationary — port-forward it
+  once and it becomes the best inbound-capable node; pull-based dialing
+  remains the fallback for everyone else.
+- **Voice relay != text relay:** do not conflate with running a Nostr
+  text relay (strfry etc.). Text relays serve the community's events;
+  voice appliances serve raid audio. Different jobs, different scaling.
+- **Known wrinkle — simultaneous same-key devices:** replaceable events
+  (LFG listings, raid role events) can ping-pong if two devices publish
+  the same d-tag. Rule for v1: one device is authoritative per event
+  type (e.g. PC owns character LFG state; phone owns its own presence;
+  appliance owns relay reports). Document in-app if it bites.
+- **Chat history on a newly linked device:** works today — the shared
+  private key decrypts all DMs, and relays store history, so a new
+  device re-subscribes and downloads. No redesign needed.
+
 ### Verification (why naive pledges don't work)
 
 "I pledge 5 Mbps" is only testable mid-raid when your relay chokes —
