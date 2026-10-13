@@ -231,6 +231,33 @@ static int decrypt_content(const uint8_t key[32], const char *content,
 
 /* ---- public API ---- */
 
+/* Persistent chat connections: one per relay, kept open across messages.
+ * Connect-per-message raced the background poll thread and cost a full
+ * TLS handshake per line typed. */
+static WsConn g_chat_conn[SYNC_MAX_RELAYS];
+static int g_chat_conn_live[SYNC_MAX_RELAYS];
+
+static void chat_conn_close(int i)
+{
+    if (g_chat_conn_live[i]) {
+        ws_close(&g_chat_conn[i]);
+        g_chat_conn_live[i] = 0;
+    }
+}
+
+static WsConn *chat_conn_get(SyncState *s, int i)
+{
+    if (g_chat_conn_live[i])
+        return &g_chat_conn[i];
+    WsUrl u;
+    if (ws_parse_url(s->relays[i].url, &u) != 0)
+        return NULL;
+    if (ws_connect(&g_chat_conn[i], &u) != 0)
+        return NULL;
+    g_chat_conn_live[i] = 1;
+    return &g_chat_conn[i];
+}
+
 int chat_send_message_from(SyncState *s, const char *peer_pubkey_hex,
                            const char *from_char, const char *message)
 {
@@ -266,26 +293,28 @@ int chat_send_message_from(SyncState *s, const char *peer_pubkey_hex,
     for (int i = 0; i < s->nrelays; i++) {
         if (!s->relays[i].enabled)
             continue;
-        WsUrl u;
-        if (ws_parse_url(s->relays[i].url, &u) != 0) {
-            ws_dbg_public("chat: bad relay url %s", s->relays[i].url);
-            continue;
-        }
-        WsConn c;
-        if (ws_connect(&c, &u) != 0) {
+        WsConn *c = chat_conn_get(s, i);
+        if (!c) {
             ws_dbg_public("chat: connect to %s failed", s->relays[i].url);
             continue;
         }
         s->relays[i].connected = 1;
-        if (ws_send_text(&c, msg) != 0) {
-            ws_dbg_public("chat: send to %s failed", s->relays[i].url);
-            ws_close(&c);
-            continue;
+        if (ws_send_text(c, msg) != 0) {
+            /* stale connection: reconnect once and retry */
+            ws_dbg_public("chat: send to %s failed, reconnecting",
+                          s->relays[i].url);
+            chat_conn_close(i);
+            c = chat_conn_get(s, i);
+            if (!c || ws_send_text(c, msg) != 0) {
+                ws_dbg_public("chat: retry to %s failed", s->relays[i].url);
+                chat_conn_close(i);
+                continue;
+            }
         }
-        /* read the relay's verdict before closing - rejections are
+        /* read the relay's verdict - rejections are
          * ["OK", id, false, "reason"] and were previously invisible */
         char verdict[512];
-        int n = ws_recv_text(&c, verdict, sizeof(verdict));
+        int n = ws_recv_text(c, verdict, sizeof(verdict));
         if (n > 0) {
             if (strstr(verdict, "\"false\"") || strstr(verdict, ",false,")) {
                 ws_dbg_public("chat: REJECTED by %s: %s", s->relays[i].url, verdict);
@@ -297,7 +326,6 @@ int chat_send_message_from(SyncState *s, const char *peer_pubkey_hex,
             ws_dbg_public("chat: no verdict from %s (assuming sent)", s->relays[i].url);
             ok++;
         }
-        ws_close(&c);
     }
     return ok > 0 ? 0 : -1;
 }
