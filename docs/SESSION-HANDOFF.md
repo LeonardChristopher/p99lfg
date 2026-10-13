@@ -141,6 +141,38 @@ cross-module signatures, stale REQ filters, leftover stubs. Findings:
   signatures match chat.h; `channels.c` CSV code round-trips the
   officer field (regression-tested now).
 
-## 3. Next after this feature
+## 3. Bug round 1 (live test adam+steve, Oct 13 2026) — FIXED
+
+Symptoms: invitee had to manually join after being invited; group chat
+window stale until closed and reopened; leader saw stale state too.
+
+Root causes (all in win32_main.c):
+
+1. **Thread bug**: sync callbacks (on_dm, on_generic) run on the
+   background sync thread. They posted `WM_USER+4` to the MAIN window,
+   which had no handler for it — the group window never learned about
+   new state/messages. (`WM_USER+4` only handled in group_wnd_proc.)
+2. **g_group_wnd never assigned** — could not post to the group window
+   at all; opening Group twice stacked two windows.
+3. **Blocking MessageBox on the sync thread** (invite popup + new-DM
+   notice): relay processing froze until the user clicked OK.
+4. **State adoption (kind 30081) posted no refresh at all.**
+5. Group window open didn't repaint the roster from current state.
+
+Fixes: new `WM_GROUPREFRESH` posted to main window (handles by repainting
+group window + roster); new `WM_INVITEPOPUP` — sync thread stages text in
+`g_pending_popup`, UI thread shows it and (for invites) opens the group
+window; `g_group_wnd` now assigned/cleared, duplicate-open brings to
+front; 30081 adoption posts refresh; roster refreshed on window open.
+
+The manual-join workaround for invitees: the invite auto-joins by name
+only; the roster fills in when the leader's state event arrives (<=5s
+poll) and now repaints live.
+
+## 4. Next after this feature
 
 See ROADMAP doc: raids (multi-group), voice indication, mobile parity.
+Known rough edges to consider: group window layout is fixed-position;
+waitlist has no UI for the leader to promote manually (auto-promotes on
+leave only); `g_pending_popup` is a single slot (two popups in the same
+poll cycle overwrite each other - acceptable).

@@ -59,6 +59,9 @@ static int g_group_nmembers;
 static GroupMember g_group_wait[GROUP_WAIT_MAX];
 static int g_group_nwait;
 static int g_group_is_leader;
+/* popup text staged by the sync thread, shown by the UI thread on
+ * WM_INVITEPOPUP (MessageBox on the sync thread would block relays) */
+static char g_pending_popup[256];
 static char g_inv_channel[CHANNEL_NAME_MAX];
 static char g_inv_role[16];
 static char g_inv_sender[64];
@@ -103,6 +106,8 @@ static ChatPeer *chat_peer_active(void)
 }
 
 #define WM_DMARRIVED (WM_USER + 3)
+#define WM_GROUPREFRESH (WM_USER + 5)
+#define WM_INVITEPOPUP (WM_USER + 6)
 
 /* ---- last-seen presence (option 1: freshness from event timestamps) ---- */
 #define PRESENCE_MAX 512
@@ -363,15 +368,18 @@ static void on_dm(const char *sender_pubkey, const char *content, void *ud)
         snprintf(g_group_name, sizeof(g_group_name), "%s", ch);
         g_group_log_text[0] = '\0';
         g_group_is_leader = 0;
+        g_group_nmembers = 0;
+        g_group_nwait = 0;
         char note[160];
         snprintf(note, sizeof(note),
                  "--- invited to group %s (%s) by %s ---\r\n", ch, role, sender_name);
         strncat(g_group_log_text, note,
                 sizeof(g_group_log_text) - strlen(g_group_log_text) - 1);
-        MessageBoxA(g_hwnd,
-                    "You have been invited to a group!\nOpen the Group window to chat.",
-                    "p99lfg group invite", MB_ICONINFORMATION);
-        PostMessageA(g_hwnd, WM_USER + 4, 0, 0);
+        /* runs on the sync thread: no blocking MessageBox here, it would
+         * freeze all relay processing until clicked. Stash + post. */
+        snprintf(g_pending_popup, sizeof(g_pending_popup),
+                 "You have been invited to a group!");
+        PostMessageA(g_hwnd, WM_INVITEPOPUP, 1, 0);
         return;
     }
     /* always append to the sender's own history */
@@ -381,12 +389,11 @@ static void on_dm(const char *sender_pubkey, const char *content, void *ud)
     strncat(peer->log, "\r\n", sizeof(peer->log) - strlen(peer->log) - 1);
 
     if (strcmp(g_chat_with, sender_pubkey) != 0) {
-        /* DM from someone we're not currently viewing: notify */
-        char note[256];
-        snprintf(note, sizeof(note),
+        /* DM from someone we're not currently viewing: notify on the UI
+         * thread (a MessageBox here would block the sync thread). */
+        snprintf(g_pending_popup, sizeof(g_pending_popup),
                  "New message from %s (open Chat to read it).", sender_name);
-        if (g_hwnd)
-            MessageBoxA(g_hwnd, note, "p99lfg", MB_ICONINFORMATION);
+        PostMessageA(g_hwnd, WM_INVITEPOPUP, 0, 0);
     }
     PostMessageA(g_hwnd, WM_DMARRIVED, 0, 0);
 }
@@ -474,6 +481,8 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
         group_state_parse(content, g_group_members, &g_group_nmembers,
                           g_group_wait, &g_group_nwait);
         group_roster_refresh();
+        if (g_hwnd)
+            PostMessageA(g_hwnd, WM_GROUPREFRESH, 0, 0);
         return;
     }
     if (kind == 30083) {
@@ -596,7 +605,7 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
         strncat(g_group_log_text, disp,
                 sizeof(g_group_log_text) - strlen(g_group_log_text) - 1);
         if (g_hwnd)
-            PostMessageA(g_hwnd, WM_USER + 4, 0, 0);
+            PostMessageA(g_hwnd, WM_GROUPREFRESH, 0, 0);
         return;
     }
     if (!g_ratings)
@@ -1459,6 +1468,13 @@ static LRESULT CALLBACK group_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
     }
     if (msg == WM_USER + 4)
         { group_refresh(); return 0; }
+    if (msg == WM_GROUPREFRESH)
+        { group_refresh(); group_roster_refresh(); return 0; }
+    if (msg == WM_DESTROY) {
+        if (g_group_wnd == dlg)
+            g_group_wnd = NULL;
+        return 0;
+    }
     return DefWindowProcA(dlg, msg, wp, lp);
 }
 
@@ -1472,6 +1488,11 @@ static void on_group_window(void)
     RegisterClassA(&wc);
     RECT pr;
     GetWindowRect(g_hwnd, &pr);
+    if (g_group_wnd) { /* already open: just bring it to the front */
+        ShowWindow(g_group_wnd, SW_SHOWNORMAL);
+        SetForegroundWindow(g_group_wnd);
+        return;
+    }
     HWND dlg = CreateWindowExA(0, "p99lfg_group",
                                g_group_name[0] ? "Group chat" : "Group chat (join a channel)",
                                WS_OVERLAPPEDWINDOW,
@@ -1506,10 +1527,12 @@ static void on_group_window(void)
         SendMessageA(c, WM_SETFONT, (WPARAM)hf, TRUE);
         c = GetWindow(c, GW_HWNDNEXT);
     }
+    g_group_wnd = dlg;
     if (g_group_name[0])
         SetWindowTextA(g_group_channel, g_group_name);
     ShowWindow(dlg, SW_SHOW);
     group_refresh();
+    group_roster_refresh();
 }
 
 /* ---- QR identity ---- */
@@ -1836,6 +1859,26 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_DMARRIVED:
         chat_refresh();
         return 0;
+    case WM_GROUPREFRESH:
+        /* relay traffic updated the group state/log (sync thread posts
+         * this): repaint the group window if open, and the roster.
+         * group_refresh/group_roster_refresh no-op on NULL handles. */
+        group_refresh();
+        group_roster_refresh();
+        return 0;
+    case WM_INVITEPOPUP: {
+        /* sync thread staged a popup (invite or new-DM notice); show it
+         * here on the UI thread so relays never stall on a MessageBox. */
+        MessageBoxA(hwnd, g_pending_popup, "p99lfg", MB_ICONINFORMATION);
+        if (wp == 1) {
+            /* group invite: open the group window onto the new channel */
+            on_group_window();
+            if (g_group_channel)
+                SetWindowTextA(g_group_channel, g_group_name);
+        }
+        g_pending_popup[0] = '\0';
+        return 0;
+    }
     case WM_CONTEXTMENU: {
         if ((HWND)wp != g_list)
             break;
