@@ -269,6 +269,10 @@ int ws_connect(WsConn *c, const WsUrl *url)
 
 int ws_send_text(WsConn *c, const char *msg)
 {
+#ifdef _WIN32
+    if (c->tls && c->sock == WS_INVALID_SOCKET)
+        return ws_winhttp_send_text(c, msg); /* WinHTTP does its own framing */
+#endif
     size_t len = strlen(msg);
     unsigned char mask[4];
     for (int i = 0; i < 4; i++)
@@ -301,6 +305,10 @@ int ws_send_text(WsConn *c, const char *msg)
 
 int ws_recv_text(WsConn *c, char *out, size_t outsz)
 {
+#ifdef _WIN32
+    if (c->tls && c->sock == WS_INVALID_SOCKET)
+        return ws_winhttp_recv_text(c, out, outsz); /* unframed messages */
+#endif
     unsigned char hdr[2];
     size_t need = 2;
     size_t have = 0;
