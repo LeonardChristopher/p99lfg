@@ -261,7 +261,63 @@ Full relay probe (node, all kinds #t p99lfg) revealed:
   fix (dedup scoping) landed in the 20:58 build 68db02f. Users MUST
   update BOTH clients; old+new mix reproduces old bugs.
 
-## 4. Next after this feature
+## 5. Code review findings (Oct 13, post round-5, NOT yet fixed — pick
+these up next session; user is resting from testing)
+
+Bugs found, by severity:
+
+1. **Content truncation** (channels.c/nostr.c): NostrEvent.content is
+   512 bytes. Worst-case group STATE csv (6 members + 2 wait, 64-char
+   names, 65-char pubkeys) is ~1092 bytes -> snprintf truncates the
+   roster JSON mid-way -> parse produces garbage/short rosters at >2-3
+   members with long names. Chat worst case (32+512) = 564 > 512 too.
+   FIX: enlarge content (e.g. 2048) AND cap message input to ~400
+   chars, cap roster names, or both. Also NostrEvent.content limit vs
+   relay limits should be checked.
+2. **Self-echo** (win32_main.c ~620): the kind-9 group chat handler
+   has NO `pubkey == g_sync.pubkey` check. Your own messages come back
+   on the next poll and append AGAIN ("you see your message twice",
+   ~5s later). Dedup can't help (sent ids were never received). FIX:
+   skip own pubkey in the chat branch (or mark sent ids as seen).
+3. **rand()-based IVs on Windows** (chat.c random_bytes): DM IVs use
+   `rand() ^ GetTickCount()` — predictable; Nostr identity correctly
+   uses CryptGenRandom, chat should too. Crypto hygiene, not the
+   current bugs' cause.
+4. **chat_peer_get recycles slot 0** when CHAT_PEERS_MAX is full —
+   silently corrupts the conversation log of peer 0. Should evict
+   least-recently-used instead.
+5. **group_create tag collision**: grp%06x from time^tick-seeded
+   rand(); two users creating in the same second can collide (1 in
+   16M per seed, but seeds are correlated). Low priority.
+6. **Send failures are silent for state**: group_state_publish return
+   is ignored at call sites — a failed roster publish desyncs clients
+   until the next change. Consider retry/status line.
+7. **WSA/EM_CHARFROMPOS roster right-click**: HIWORD of the result is
+   the line index — code treats it correctly, but EM_CHARFROMPOS
+   returns a packed value; on very old edit controls without
+   ES_MULTILINE range checks this can overflow. Verify on real use.
+8. presence_set uses `g_presence[g_npresence]` after the bounds check
+   returns without else-guard in one path — verified OK (185 checks).
+
+UX improvements suggested (ease of use):
+
+- Group + DM chat logs don't auto-scroll to the bottom on new content
+  (SetWindowTextA resets view to top every refresh — user must scroll
+  down manually EVERY new message. FIX: after SetWindowText, do
+  EM_SETSEL -1,-1 + EM_SCROLLCARET, or switch to EM_REPLACESEL
+  append). This is probably the single most annoying live bug.
+- No visual feedback of "connecting/syncing" state (a status text in
+  the group window title like 'synced 5s ago').
+- Group window: roster and log are fixed-size; at 640x460 they fit,
+  but no resizing behavior. Low priority.
+- Input length unbounded visually: user can type 5000 chars, only 512
+  are used; cap the input control (EM_SETLIMITTEXT).
+- The invite popup has no Decline path (auto-joins on OK).
+- No timestamps in group chat lines; helpful for 'missing message'
+  debugging AND for users.
+- Window title for group window should include the member count.
+
+## 6. Next after this feature
 
 See ROADMAP doc: raids (multi-group), voice indication, mobile parity.
 Known rough edges to consider: group window layout is fixed-position;
