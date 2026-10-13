@@ -40,6 +40,7 @@
 static LfgState *g_state;
 static HWND g_hwnd, g_list, g_ed_name, g_ed_zone, g_st_dir;
 static UINT g_timer;
+static HFONT g_font_bold;
 static SyncState g_sync;
 static int g_sync_thread_run;
 static HANDLE g_sync_thread;
@@ -680,10 +681,31 @@ static void populate_list(void)
         SendMessageA(g_list, LB_SETCURSEL, (WPARAM)reselect, 0);
 }
 
+static HWND g_status;
+
+static void status_refresh(void)
+{
+    if (!g_status)
+        return;
+    char text[256];
+    int online = 0;
+    for (int i = 0; i < g_sync.nrelays; i++)
+        if (g_sync.relays[i].connected)
+            online++;
+    char who[80] = "";
+    if (g_settings.displayname[0])
+        snprintf(who, sizeof(who), "  |  %s", g_settings.displayname);
+    snprintf(text, sizeof(text),
+             "Relays: %d/%d online%s  |  LFG listed: %d",
+             online, g_sync.nrelays, who, lfg_count(g_state));
+    SetWindowTextA(g_status, text);
+}
+
 static void do_poll(void)
 {
     lfg_poll(g_state);
     populate_list();
+    status_refresh();
 }
 
 static void on_add(void)
@@ -809,13 +831,16 @@ static void on_char_del(void)
 
 static void create_controls(HWND hwnd, HFONT hf)
 {
+    g_status = CreateWindowA("STATIC", "Relays: connecting...",
+                            WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+                            10, 10, 590, 24, hwnd, (HMENU)254, NULL, NULL);
     g_list = CreateWindowExA(WS_EX_CLIENTEDGE, "LISTBOX", NULL,
                              WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
-                             10, 10, 590, 420, hwnd, (HMENU)ID_LIST, NULL, NULL);
+                             10, 40, 590, 390, hwnd, (HMENU)ID_LIST, NULL, NULL);
 
     /* ---- my characters panel (right) ---- */
     CreateWindowA("STATIC", "My Characters", WS_CHILD | WS_VISIBLE,
-                 610, 10, 130, 18, hwnd, NULL, NULL, NULL);
+                 610, 10, 130, 22, hwnd, (HMENU)253, NULL, NULL);
     g_char_list = CreateWindowExA(WS_EX_CLIENTEDGE, "LISTBOX", NULL,
                              WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
                              610, 30, 140, 160, hwnd, (HMENU)ID_CHAR_LIST, NULL, NULL);
@@ -879,6 +904,7 @@ static void create_controls(HWND hwnd, HFONT hf)
         SendMessageA(ctrl, WM_SETFONT, (WPARAM)hf, TRUE);
         ctrl = GetWindow(ctrl, GW_HWNDNEXT);
     }
+    SendMessageA(GetDlgItem(hwnd, 253), WM_SETFONT, (WPARAM)g_font_bold, TRUE);
 }
 
 /* ---- favourites ---- */
@@ -1859,11 +1885,16 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     wc.lpszClassName = "p99lfg";
     RegisterClassA(&wc);
 
-    HFONT hf = CreateFontA(-12, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+    HFONT hf = CreateFontA(-13, 0, 0, 0, FW_NORMAL, 0, 0, 0,
                            ANSI_CHARSET, 0, 0, CLEARTYPE_QUALITY,
-                           DEFAULT_PITCH | FF_DONTCARE, "Tahoma");
+                           DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+    HFONT hfb = CreateFontA(-15, 0, 0, 0, FW_BOLD, 0, 0, 0,
+                           ANSI_CHARSET, 0, 0, CLEARTYPE_QUALITY,
+                           DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+    /* section headers use the bold face; pass both via a global */
+    g_font_bold = hfb;
 
-    g_hwnd = CreateWindowExA(0, "p99lfg", "p99lfg - Project 1999 LFG",
+    g_hwnd = CreateWindowExA(0, "p99lfg", "p99lfg  -  Project 1999 Group Finder",
                              WS_OVERLAPPEDWINDOW,
                              CW_USEDEFAULT, CW_USEDEFAULT, 900, 640,
                              NULL, NULL, hInst, hf);
