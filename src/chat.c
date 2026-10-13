@@ -272,8 +272,21 @@ int chat_send_message(SyncState *s, const char *peer_pubkey_hex,
             ws_close(&c);
             continue;
         }
-        ws_dbg_public("chat: sent DM event id=%.12s to %s", ev.id, s->relays[i].url);
-        ok++;
+        /* read the relay's verdict before closing - rejections are
+         * ["OK", id, false, "reason"] and were previously invisible */
+        char verdict[512];
+        int n = ws_recv_text(&c, verdict, sizeof(verdict));
+        if (n > 0) {
+            if (strstr(verdict, "\"false\"") || strstr(verdict, ",false,")) {
+                ws_dbg_public("chat: REJECTED by %s: %s", s->relays[i].url, verdict);
+            } else {
+                ws_dbg_public("chat: accepted by %s: %.60s", s->relays[i].url, verdict);
+                ok++;
+            }
+        } else {
+            ws_dbg_public("chat: no verdict from %s (assuming sent)", s->relays[i].url);
+            ok++;
+        }
         ws_close(&c);
     }
     return ok > 0 ? 0 : -1;
