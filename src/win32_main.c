@@ -1791,6 +1791,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
 {
     (void)hPrev; (void)cmd;
     log_open();
+    log_printf("BUILD 2026-10-13-polish  (if this line is missing you are on an old exe)\n");
     {
         char dbgpath[LFG_PATH_MAX];
         GetModuleFileNameA(NULL, dbgpath, sizeof(dbgpath));
