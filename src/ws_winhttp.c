@@ -134,10 +134,9 @@ int ws_winhttp_send_text(WsConn *c, const char *msg)
     WinHttpWs *w = wh_of(c);
     if (!w || !w->ws)
         return -1;
-    DWORD sent;
     DWORD r = WinHttpWebSocketSend(w->ws,
                                    WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE,
-                                   (PVOID)msg, (DWORD)strlen(msg), &sent);
+                                   (PVOID)msg, (DWORD)strlen(msg));
     return r == NO_ERROR ? 0 : -1;
 }
 
