@@ -118,6 +118,31 @@ static char g_chat_with[NOSTR_PUBKEY_HEX];
 static char g_chat_name[64];
 static char *g_chat_log;   /* points at the active peer's log */
 static HWND g_chat_wnd, g_chat_edit, g_chat_input;
+/* Enter-to-send: single-line EDIT controls in frame windows don't get
+ * WM_CHAR Enter by default. Subclass the input boxes and forward Enter
+ * as a click on their Send button. */
+static WNDPROC g_group_input_proc;
+static WNDPROC g_chat_input_proc;
+static LRESULT CALLBACK group_input_subclassProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == WM_KEYDOWN && wp == VK_RETURN) {
+        if (g_group_wnd)
+            SendMessageA(g_group_wnd, WM_COMMAND, MAKEWPARAM(ID_GROUP_SEND, BN_CLICKED),
+                          (LPARAM)GetDlgItem(g_group_wnd, ID_GROUP_SEND));
+        return 0;
+    }
+    return CallWindowProcA(g_group_input_proc, h, msg, wp, lp);
+}
+static LRESULT CALLBACK chat_input_subclassProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == WM_KEYDOWN && wp == VK_RETURN) {
+        if (g_chat_wnd)
+            SendMessageA(g_chat_wnd, WM_COMMAND, MAKEWPARAM(ID_CHAT_SEND, BN_CLICKED),
+                          (LPARAM)GetDlgItem(g_chat_wnd, ID_CHAT_SEND));
+        return 0;
+    }
+    return CallWindowProcA(g_chat_input_proc, h, msg, wp, lp);
+}
 
 static ChatPeer *chat_peer_get(const char *pubkey, const char *name)
 {
@@ -1246,12 +1271,15 @@ static void on_chat(void)
                               WS_OVERLAPPEDWINDOW,
                               pr.left + 80, pr.top + 60, 420, 370,
                               g_hwnd, NULL, NULL, NULL);
+    g_chat_wnd = dlg;
     g_chat_edit = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
                  WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | WS_VSCROLL,
                  10, 10, 380, 220, dlg, (HMENU)ID_CHAT_LOG, NULL, NULL);
     g_chat_input = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
                  WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                  10, 240, 300, 24, dlg, (HMENU)ID_CHAT_INPUT, NULL, NULL);
+    g_chat_input_proc = (WNDPROC)SetWindowLongPtrA(g_chat_input, GWLP_WNDPROC,
+                                                   (LONG_PTR)chat_input_subclassProc);
     CreateWindowA("BUTTON", "Send", WS_CHILD | WS_VISIBLE,
                  315, 238, 75, 26, dlg, (HMENU)ID_CHAT_SEND, NULL, NULL);
     CreateWindowA("STATIC", "Send as:", WS_CHILD | WS_VISIBLE,
@@ -1550,6 +1578,8 @@ static void on_group_window(void)
     g_group_input = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
                  WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                  10, 310, 320, 24, dlg, (HMENU)ID_GROUP_INPUT, NULL, NULL);
+    g_group_input_proc = (WNDPROC)SetWindowLongPtrA(g_group_input, GWLP_WNDPROC,
+                                                    (LONG_PTR)group_input_subclassProc);
     CreateWindowA("BUTTON", "Send", WS_CHILD | WS_VISIBLE,
                  335, 308, 75, 26, dlg, (HMENU)ID_GROUP_SEND, NULL, NULL);
     /* group roster + join/leave */

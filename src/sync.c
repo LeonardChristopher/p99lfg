@@ -122,14 +122,24 @@ int sync_send_event(SyncState *s, const char *msg)
             ws_close(&c);
             continue;
         }
-        /* wait for the relay's OK/notice; treat quiet as sent */
+        /* wait for the relay's verdict: ["OK",<id>,true|false,...].
+         * A rejected event (ok:false) must NOT count as published,
+         * otherwise messages silently vanish on that relay. */
         char resp[512];
         int n = ws_recv_text(&c, resp, sizeof(resp));
-        if (n < 0)
-            ws_log_public("publish: no confirmation from %s (assuming sent)", s->relays[i].url);
-        else
+        int relay_ok = 0;
+        if (n <= 0) {
+            ws_log_public("publish: no confirmation from %s (not counted)",
+                           s->relays[i].url);
+        } else {
             ws_log_public("publish: %s said %.60s", s->relays[i].url, resp);
-        ok++;
+            /* rejected only on explicit ok:false or a NOTICE; anything
+             * else (OK true, untyped reply) counts as accepted */
+            if (!strstr(resp, "false") && !strstr(resp, "NOTICE"))
+                relay_ok = 1;
+        }
+        if (relay_ok)
+            ok++;
         ws_close(&c);
     }
     return ok > 0 ? 0 : -1;

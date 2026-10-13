@@ -244,6 +244,23 @@ no invite popup) — FIXED
 Tests updated: kind-30078 is state (re-delivered), kind-9 dup still
 suppressed, kind-30081 re-delivered every poll.
 
+## 3e. Bug round 5 (wire audit) — FIXED / NOTES
+
+Full relay probe (node, all kinds #t p99lfg) revealed:
+
+- Messages sometimes landed on only ONE relay (charsurname msgs on
+  nos.lol, missing on damus). Root cause: sync_send_event counted
+  "quiet socket" as published. Now requires explicit relay verdict;
+  ok:false / NOTICE / silence = not counted, and the group chat send
+  shows "send failed" when no relay accepted.
+- Enter-to-send added for group + DM chat inputs (subclassed EDIT
+  controls; g_chat_wnd was never assigned - fixed).
+- REQ has no since/limit: every 5s poll re-downloads the ENTIRE p99lfg
+  feed (fine at current volume; growth risk later - see roadmap).
+- USER REPORTED "cannot see roster" with the 20:11 exe - the roster
+  fix (dedup scoping) landed in the 20:58 build 68db02f. Users MUST
+  update BOTH clients; old+new mix reproduces old bugs.
+
 ## 4. Next after this feature
 
 See ROADMAP doc: raids (multi-group), voice indication, mobile parity.
