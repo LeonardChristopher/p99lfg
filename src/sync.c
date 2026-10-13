@@ -200,18 +200,38 @@ int sync_handle_message(SyncState *s, const char *msg)
     const char *evobj = strchr(msg + 8, '{');
     if (!evobj)
         return -1;
-    /* duplicate suppression: every poll re-downloads stored events;
-     * skip ones we already handled (ring of recent ids). */
+    /* duplicate suppression: every poll re-downloads stored events.
+     * Applies ONLY to append-style kinds (chat kind 9, DM kind 4,
+     * ratings) where a re-send would double-append. State kinds
+     * (30081 group roster, 30082 profile, 30078 LFG) are replaceable /
+     * latest-wins and must be re-delivered every poll: a client may see
+     * the state event BEFORE its invite DM activates the group, and
+     * suppressing it would leave the roster empty forever. */
     {
-        char evid[NOSTR_EVENT_ID_HEX] = {0};
-        if (json_get_string(evobj, "id", evid, sizeof(evid)) >= 0 && evid[0]) {
-            for (int i = 0; i < s->seen_n; i++)
-                if (strcmp(s->seen_ids[i], evid) == 0)
-                    return 1; /* already processed */
-            snprintf(s->seen_ids[s->seen_next], NOSTR_EVENT_ID_HEX, "%s", evid);
-            s->seen_next = (s->seen_next + 1) % SYNC_SEEN_MAX;
-            if (s->seen_n < SYNC_SEEN_MAX)
-                s->seen_n++;
+        char kindstr_dedup[16] = {0};
+        const char *kdp = strstr(evobj, "\"kind\":");
+        int dedup_kind = 1;
+        if (kdp) {
+            const char *kd = kdp + 7;
+            size_t ki = 0;
+            while (*kd >= '0' && *kd <= '9' && ki < sizeof(kindstr_dedup) - 1)
+                kindstr_dedup[ki++] = *kd++;
+            if (strcmp(kindstr_dedup, "30081") == 0 ||
+                strcmp(kindstr_dedup, "30082") == 0 ||
+                strcmp(kindstr_dedup, "30078") == 0)
+                dedup_kind = 0;
+        }
+        if (dedup_kind) {
+            char evid[NOSTR_EVENT_ID_HEX] = {0};
+            if (json_get_string(evobj, "id", evid, sizeof(evid)) >= 0 && evid[0]) {
+                for (int i = 0; i < s->seen_n; i++)
+                    if (strcmp(s->seen_ids[i], evid) == 0)
+                        return 1; /* already processed */
+                snprintf(s->seen_ids[s->seen_next], NOSTR_EVENT_ID_HEX, "%s", evid);
+                s->seen_next = (s->seen_next + 1) % SYNC_SEEN_MAX;
+                if (s->seen_n < SYNC_SEEN_MAX)
+                    s->seen_n++;
+            }
         }
     }
     /* kind-4 DM: hand the raw content to the DM callback for decryption. */

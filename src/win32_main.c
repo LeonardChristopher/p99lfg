@@ -59,9 +59,45 @@ static int g_group_nmembers;
 static GroupMember g_group_wait[GROUP_WAIT_MAX];
 static int g_group_nwait;
 static int g_group_is_leader;
+/* g_group_log_text and the roster arrays are touched by BOTH the UI
+ * thread (own sends, create/invite) and the sync thread (received
+ * messages, adopted state). Unsynchronized strncat from two threads is
+ * a read-modify-write race: one append overwrites the other ("message
+ * lost when sent right after someone else"). Every mutation goes
+ * through group_log_append / takes g_group_lock. */
+static CRITICAL_SECTION g_group_lock;
+static int g_group_lock_init;
+static void group_lock(void)
+{
+    if (!g_group_lock_init) {
+        /* first caller initialises; both threads enter here before any
+         * group state exists, so the race on the init flag is benign
+         * (InitializeCriticalSection on an already-initialised CS is a
+         * no-op in practice on Windows). */
+        InitializeCriticalSection(&g_group_lock);
+        g_group_lock_init = 1;
+    }
+    EnterCriticalSection(&g_group_lock);
+}
+static void group_unlock(void)
+{
+    LeaveCriticalSection(&g_group_lock);
+}
+static void group_log_append(const char *text)
+{
+    group_lock();
+    strncat(g_group_log_text, text,
+            sizeof(g_group_log_text) - strlen(g_group_log_text) - 1);
+    group_unlock();
+}
 /* popup text staged by the sync thread, shown by the UI thread on
  * WM_INVITEPOPUP (MessageBox on the sync thread would block relays) */
 static char g_pending_popup[256];
+/* invites get their own sticky flag: a burst of DMs in one poll batch
+ * must never overwrite a pending invite notification before the UI
+ * thread shows it. */
+static int g_pending_invite;
+static char g_pending_invite_channel[CHANNEL_NAME_MAX];
 static char g_inv_channel[CHANNEL_NAME_MAX];
 static char g_inv_role[16];
 static char g_inv_sender[64];
@@ -373,12 +409,12 @@ static void on_dm(const char *sender_pubkey, const char *content, void *ud)
         char note[160];
         snprintf(note, sizeof(note),
                  "--- invited to group %s (%s) by %s ---\r\n", ch, role, sender_name);
-        strncat(g_group_log_text, note,
-                sizeof(g_group_log_text) - strlen(g_group_log_text) - 1);
+        group_log_append(note);
         /* runs on the sync thread: no blocking MessageBox here, it would
          * freeze all relay processing until clicked. Stash + post. */
-        snprintf(g_pending_popup, sizeof(g_pending_popup),
-                 "You have been invited to a group!");
+        snprintf(g_pending_invite_channel, sizeof(g_pending_invite_channel),
+                 "%s", ch);
+        g_pending_invite = 1;
         PostMessageA(g_hwnd, WM_INVITEPOPUP, 1, 0);
         return;
     }
@@ -432,22 +468,29 @@ static void group_roster_refresh(void)
 {
     if (!g_group_roster)
         return;
+    group_lock();
+    GroupMember snap_m[GROUP_MEMBERS_MAX];
+    GroupMember snap_w[GROUP_WAIT_MAX];
+    int snap_nm = g_group_nmembers, snap_nw = g_group_nwait;
+    memcpy(snap_m, g_group_members, sizeof(snap_m[0]) * (size_t)snap_nm);
+    memcpy(snap_w, g_group_wait, sizeof(snap_w[0]) * (size_t)snap_nw);
+    group_unlock();
     char text[1024];
     size_t o = 0;
     o += (size_t)snprintf(text + o, sizeof(text) - o, "Group (%d/6):\r\n",
-                          g_group_nmembers);
-    for (int i = 0; i < g_group_nmembers; i++)
+                          snap_nm);
+    for (int i = 0; i < snap_nm; i++)
         o += (size_t)snprintf(text + o, sizeof(text) - o, "  %s%s%s\r\n",
-                              g_group_members[i].name,
-                              strcmp(g_group_members[i].pubkey, g_sync.pubkey) == 0
+                              snap_m[i].name,
+                              strcmp(snap_m[i].pubkey, g_sync.pubkey) == 0
                                   ? " (you)" : "",
-                              g_group_members[i].officer ? " (can invite)" : "");
-    if (g_group_nwait > 0) {
+                              snap_m[i].officer ? " (can invite)" : "");
+    if (snap_nw > 0) {
         o += (size_t)snprintf(text + o, sizeof(text) - o,
-                              "Waiting (%d/2):\r\n", g_group_nwait);
-        for (int i = 0; i < g_group_nwait; i++)
+                              "Waiting (%d/2):\r\n", snap_nw);
+        for (int i = 0; i < snap_nw; i++)
             o += (size_t)snprintf(text + o, sizeof(text) - o, "  %s\r\n",
-                                  g_group_wait[i].name);
+                                  snap_w[i].name);
     }
     SetWindowTextA(g_group_roster, text);
 }
@@ -478,8 +521,10 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
         chsuffix += strlen("p99lfg-g-");
         if (strcmp(g_group_name, chsuffix) != 0)
             return;
+        group_lock();
         group_state_parse(content, g_group_members, &g_group_nmembers,
                           g_group_wait, &g_group_nwait);
+        group_unlock();
         group_roster_refresh();
         if (g_hwnd)
             PostMessageA(g_hwnd, WM_GROUPREFRESH, 0, 0);
@@ -602,8 +647,7 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
         else
             snprintf(disp, sizeof(disp), "%s: %.*s\r\n",
                      sendername, (int)(me - m), m);
-        strncat(g_group_log_text, disp,
-                sizeof(g_group_log_text) - strlen(g_group_log_text) - 1);
+        group_log_append(disp);
         if (g_hwnd)
             PostMessageA(g_hwnd, WM_GROUPREFRESH, 0, 0);
         return;
@@ -1254,8 +1298,7 @@ static void on_group_send(HWND dlg)
         char disp[700];
         snprintf(disp, sizeof(disp), "You [%s]: %s\r\n",
                  frombuf[0] ? frombuf : "?", m);
-        strncat(g_group_log_text, disp,
-                sizeof(g_group_log_text) - strlen(g_group_log_text) - 1);
+        group_log_append(disp);
         SetWindowTextA(g_group_input, "");
         group_refresh();
     } else {
@@ -1286,8 +1329,7 @@ static void on_group_join(HWND dlg)
     char welcome[128];
     snprintf(welcome, sizeof(welcome),
              "--- joined #%s ---\r\n", ch);
-    strncat(g_group_log_text, welcome,
-            sizeof(g_group_log_text) - strlen(g_group_log_text) - 1);
+    group_log_append(welcome);
     group_refresh();
 }
 
@@ -1319,8 +1361,7 @@ static void on_group_create(HWND dlg)
     snprintf(welcome, sizeof(welcome),
              "--- group %s created ---\r\nRight-click players in the LFG list to invite them.\r\n",
              tag);
-    strncat(g_group_log_text, welcome,
-            sizeof(g_group_log_text) - strlen(g_group_log_text) - 1);
+    group_log_append(welcome);
     if (g_group_channel)
         SetWindowTextA(g_group_channel, tag);
     group_roster_refresh();
@@ -1372,8 +1413,7 @@ static void on_invite(const char *name, int wait)
     char note[160];
     snprintf(note, sizeof(note), "--- invited %s as %s ---\r\n", name,
              (g_group_nmembers <= GROUP_MEMBERS_MAX && !wait) ? "member" : "waitlisted");
-    strncat(g_group_log_text, note,
-            sizeof(g_group_log_text) - strlen(g_group_log_text) - 1);
+    group_log_append(note);
     group_roster_refresh();
     group_refresh();
 }
@@ -1458,8 +1498,7 @@ static LRESULT CALLBACK group_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
                 snprintf(note, sizeof(note), "--- %s: %s invites ---\r\n",
                          g_group_members[idx].name,
                          g_group_members[idx].officer ? "can now" : "no longer can");
-                strncat(g_group_log_text, note,
-                        sizeof(g_group_log_text) - strlen(g_group_log_text) - 1);
+                group_log_append(note);
                 group_roster_refresh();
                 group_refresh();
             }
@@ -1868,15 +1907,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_INVITEPOPUP: {
         /* sync thread staged a popup (invite or new-DM notice); show it
-         * here on the UI thread so relays never stall on a MessageBox. */
-        MessageBoxA(hwnd, g_pending_popup, "p99lfg", MB_ICONINFORMATION);
-        if (wp == 1) {
-            /* group invite: open the group window onto the new channel */
+         * here on the UI thread so relays never stall on a MessageBox.
+         * The invite flag is sticky - a DM burst in the same poll batch
+         * must never overwrite a pending invite. */
+        if (g_pending_invite) {
+            g_pending_invite = 0;
+            MessageBoxA(hwnd,
+                        "You have been invited to a group!\nClick OK to open it.",
+                        "p99lfg group invite", MB_ICONINFORMATION);
             on_group_window();
             if (g_group_channel)
                 SetWindowTextA(g_group_channel, g_group_name);
+        } else if (g_pending_popup[0]) {
+            MessageBoxA(hwnd, g_pending_popup, "p99lfg", MB_ICONINFORMATION);
+            g_pending_popup[0] = '\0';
         }
-        g_pending_popup[0] = '\0';
         return 0;
     }
     case WM_CONTEXTMENU: {

@@ -221,6 +221,29 @@ Debugging trick used: probe relays directly with node + built-in
 WebSocket: REQ {"kinds":[9],"#t":["p99lfg"],"limit":20} on wss://nos.lol
 / wss://relay.damus.io — separates publish-side from receive-side bugs.
 
+## 3d. Bug round 4 (invitee empty roster; msgs lost on rapid exchange;
+no invite popup) — FIXED
+
+1. Invitee saw no members: the dedup ring (round 3) suppressed the
+   kind-30081 state event, which the invitee's client had already
+   received BEFORE the invite DM activated the group. Dedup is now
+   scoped: only append-style kinds (9 chat, 4 DM, 30079/30080) are
+   deduped; state kinds (30081 roster, 30082 profile, 30078 LFG)
+   are re-delivered every poll (latest-wins).
+2. Message lost when sent right after someone else: g_group_log_text
+   was appended by BOTH the UI thread (own sends) and the sync thread
+   (received msgs) with unsynchronized strncat (read-modify-write
+   race). Added CRITICAL_SECTION g_group_lock + group_log_append();
+   state adoption and roster refresh take the lock too (refresh
+   snapshots under lock, renders outside).
+3. No "you've been invited" popup: single g_pending_popup slot was
+   overwritten by any DM notice in the same poll batch. Invites now
+   have a sticky g_pending_invite flag + their own popup that opens
+   the group window on OK; DM notices keep the single slot.
+
+Tests updated: kind-30078 is state (re-delivered), kind-9 dup still
+suppressed, kind-30081 re-delivered every poll.
+
 ## 4. Next after this feature
 
 See ROADMAP doc: raids (multi-group), voice indication, mobile parity.

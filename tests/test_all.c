@@ -190,9 +190,10 @@ static void test_sync_messages(void)
     CHECK(sync_handle_message(&st, evmsg2) == 1 && g_last_remote.lfg == 0,
           "lfg=false parsed");
 
-    /* duplicate event id: suppressed (relays re-send stored events each poll) */
-    CHECK(sync_handle_message(&st, evmsg2) == 1 && g_remote_calls == 2,
-          "duplicate event id suppressed");
+    /* kind-30078 is a replaceable STATE kind: re-delivered each poll
+     * (latest-wins), never deduped */
+    CHECK(sync_handle_message(&st, evmsg2) == 1 && g_remote_calls == 3,
+          "state kind re-delivered, not deduped");
 
     /* non-lfg-format content is ignored gracefully */
     const char *junk =
@@ -216,6 +217,22 @@ static void test_sync_messages(void)
     CHECK(g_generic_calls == 1 && g_generic_kind == 9 &&
           strcmp(g_generic_dtag, "p99lfg-g-grp0025c1") == 0,
           "kind-9 event reached generic callback with dtag");
+    /* same kind-9 event again (relays re-send each poll): suppressed */
+    CHECK(sync_handle_message(&st9, ev9) == 1 && g_generic_calls == 1,
+          "kind-9 duplicate suppressed");
+
+    /* kind-30081 state event: must be re-delivered every poll (an
+     * invitee may see the state event BEFORE the invite DM activates
+     * the group; suppressing it would leave the roster empty) */
+    const char *evstate =
+        "[\"EVENT\",\"sub1\",{\"id\":\"state-id-1\",\"pubkey\":\"pk\",\"created_at\":1,\"kind\":30081,"
+        "\"tags\":[[\"d\",\"p99lfg-g-grp0025c1\"],[\"t\",\"p99lfg\"]],"
+        "\"content\":\"{\"members\":\"A:pk\",\"wait\":\"\"}\",\"sig\":\"y\"}]";
+    g_generic_calls = 0;
+    CHECK(sync_handle_message(&st9, evstate) == 1 && g_generic_calls == 1,
+          "kind-30081 state event delivered");
+    CHECK(sync_handle_message(&st9, evstate) == 1 && g_generic_calls == 2,
+          "kind-30081 state event re-delivered on every poll");
 
     WsUrl u;
     CHECK(ws_parse_url("wss://relay.example.com", &u) == 0 && u.use_tls, "wss parse");
