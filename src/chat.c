@@ -306,7 +306,7 @@ int chat_send_message(SyncState *s, const char *peer_pubkey_hex,
                       const char *message)
 {
     return chat_send_message_from(s, peer_pubkey_hex, NULL, message);
-}}
+}
 
 int chat_try_decrypt(const char *privkey_hex, const char *sender_pubkey_hex,
                      const char *content, char *out, size_t outsz)
