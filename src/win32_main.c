@@ -1474,6 +1474,8 @@ static void history_populate(void)
     }
 }
 
+static LRESULT CALLBACK hist_wnd_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp);
+
 static void on_history_window(void)
 {
     if (g_hist_wnd) {
