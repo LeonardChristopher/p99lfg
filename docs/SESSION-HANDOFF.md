@@ -335,7 +335,37 @@ UX improvements suggested (ease of use):
   debugging AND for users.
 - Window title for group window should include the member count.
 
-## 6. Next after this feature
+## 6. USER DECISIONS (Oct 13 2026, while user away from testing)
+
+Direction confirmed by the user for the next phase of work:
+
+1. **Sync architecture: PERSISTENT CONNECTION.** The 5s poll model
+   (connect/REQ/download-all/close) is the root of several bug classes
+   fought in rounds 1-5. Replace with one persistent relay connection
+   + real-time EVENT stream (with reconnect/backoff). This is the
+   primary structural fix to do next. Keep a `since` filter regardless
+   so reconnects don't re-download the world.
+2. **Chat UX: TIMESTAMPS on messages** (user pick). Add HH:MM to group
+   + DM chat lines.
+3. **Roadmap priority: EASE OF INSTALL/USE** once groups are solid
+   (over raids/mobile parity): onboarding polish, first-run flow,
+   clearer windows, setup instructions.
+4. **Testing: AUTOMATED HARNESS.** User cannot test for a while; I
+   build a self-test that exercises the group flow end-to-end without
+   two humans (local fake relay already exists in test_ws.c pattern:
+   spin a loopback WS server, run two sync instances against it,
+   create/invite/join/chat and assert on delivered events).
+
+## 7. Work order while user is away
+
+- [ ] Automated two-instance group-flow harness (highest leverage -
+      verifies everything after it without the user)
+- [ ] Timestamps in group + DM chat lines
+- [ ] Persistent relay connection (phased: keep poll as fallback,
+      add persistent subscribe + reconnect/backoff; then retire poll)
+- [ ] Ease-of-install pass (deferred until groups verified by harness)
+
+## 8. Next after this feature
 
 See ROADMAP doc: raids (multi-group), voice indication, mobile parity.
 Known rough edges to consider: group window layout is fixed-position;
