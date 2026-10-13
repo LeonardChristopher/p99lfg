@@ -118,31 +118,13 @@ static char g_chat_with[NOSTR_PUBKEY_HEX];
 static char g_chat_name[64];
 static char *g_chat_log;   /* points at the active peer's log */
 static HWND g_chat_wnd, g_chat_edit, g_chat_input;
-/* Enter-to-send: single-line EDIT controls in frame windows don't get
- * WM_CHAR Enter by default. Subclass the input boxes and forward Enter
- * as a click on their Send button. */
+/* Enter-to-send: subclass procs defined near the group window (they
+ * need g_group_wnd + the ID_ defines); declared here for on_chat(). */
 static WNDPROC g_group_input_proc;
 static WNDPROC g_chat_input_proc;
-static LRESULT CALLBACK group_input_subclassProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
-{
-    if (msg == WM_KEYDOWN && wp == VK_RETURN) {
-        if (g_group_wnd)
-            SendMessageA(g_group_wnd, WM_COMMAND, MAKEWPARAM(ID_GROUP_SEND, BN_CLICKED),
-                          (LPARAM)GetDlgItem(g_group_wnd, ID_GROUP_SEND));
-        return 0;
-    }
-    return CallWindowProcA(g_group_input_proc, h, msg, wp, lp);
-}
-static LRESULT CALLBACK chat_input_subclassProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
-{
-    if (msg == WM_KEYDOWN && wp == VK_RETURN) {
-        if (g_chat_wnd)
-            SendMessageA(g_chat_wnd, WM_COMMAND, MAKEWPARAM(ID_CHAT_SEND, BN_CLICKED),
-                          (LPARAM)GetDlgItem(g_chat_wnd, ID_CHAT_SEND));
-        return 0;
-    }
-    return CallWindowProcA(g_chat_input_proc, h, msg, wp, lp);
-}
+static LRESULT CALLBACK group_input_subclassProc(HWND h, UINT msg, WPARAM wp, LPARAM lp);
+static LRESULT CALLBACK chat_input_subclassProc(HWND h, UINT msg, WPARAM wp, LPARAM lp);
+
 
 static ChatPeer *chat_peer_get(const char *pubkey, const char *name)
 {
@@ -1306,6 +1288,29 @@ static void on_chat(void)
 
 /* ---- group channel window ---- */
 static HWND g_group_wnd;
+/* Enter-to-send: single-line EDIT controls in frame windows don't get
+ * WM_CHAR Enter by default. Subclass the input boxes and forward Enter
+ * as a click on their Send button. */
+static LRESULT CALLBACK group_input_subclassProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == WM_KEYDOWN && wp == VK_RETURN) {
+        if (g_group_wnd)
+            SendMessageA(g_group_wnd, WM_COMMAND, MAKEWPARAM(ID_GROUP_SEND, BN_CLICKED),
+                          (LPARAM)GetDlgItem(g_group_wnd, ID_GROUP_SEND));
+        return 0;
+    }
+    return CallWindowProcA(g_group_input_proc, h, msg, wp, lp);
+}
+static LRESULT CALLBACK chat_input_subclassProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == WM_KEYDOWN && wp == VK_RETURN) {
+        if (g_chat_wnd)
+            SendMessageA(g_chat_wnd, WM_COMMAND, MAKEWPARAM(ID_CHAT_SEND, BN_CLICKED),
+                          (LPARAM)GetDlgItem(g_chat_wnd, ID_CHAT_SEND));
+        return 0;
+    }
+    return CallWindowProcA(g_chat_input_proc, h, msg, wp, lp);
+}
 
 static void group_refresh(void)
 {
