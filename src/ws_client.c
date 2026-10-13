@@ -106,7 +106,7 @@ int ws_parse_url(const char *url, WsUrl *out)
     return 0;
 }
 
-static int tcp_connect(const WsUrl *url)
+static ws_socket_t tcp_connect(const WsUrl *url)
 {
     ws_dbg("ws: connecting to %s:%d (tls=%d)...", url->host, url->port, url->use_tls);
     char portstr[8];
@@ -121,8 +121,9 @@ static int tcp_connect(const WsUrl *url)
     }
     ws_socket_t s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (s == WS_INVALID_SOCKET) {
+        ws_dbg("ws: socket() FAILED");
         freeaddrinfo(res);
-        return -1;
+        return WS_INVALID_SOCKET;
     }
     if (connect(s, res->ai_addr, (int)res->ai_addrlen) != 0) {
         ws_dbg("ws: TCP connect to %s:%d FAILED", url->host, url->port);
@@ -132,10 +133,11 @@ static int tcp_connect(const WsUrl *url)
 #else
         close(s);
 #endif
-        return -1;
+        return WS_INVALID_SOCKET;
     }
+    ws_dbg("ws: TCP connected to %s:%d", url->host, url->port);
     freeaddrinfo(res);
-    return (int)s;
+    return s;
 }
 
 static int raw_send(WsConn *c, const void *data, size_t len)
@@ -180,10 +182,9 @@ int ws_connect(WsConn *c, const WsUrl *url)
     c->sock = WS_INVALID_SOCKET;
     if (url->use_tls && !tls_connect_hook)
         return -1;
-    int s = tcp_connect(url);
-    if (s < 0)
+    c->sock = tcp_connect(url);
+    if (c->sock == WS_INVALID_SOCKET)
         return -1;
-    c->sock = (ws_socket_t)s;
     if (url->use_tls) {
         if (tls_connect_hook(url->host, (void *)(uintptr_t)c->sock, &c->tls) != 0) {
             ws_close(c);
