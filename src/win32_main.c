@@ -175,6 +175,7 @@ static const char *presence_mark(const char *name)
 #define ID_CHAT_FROM 230
 
 static FILE *g_log;
+static int g_debug;
 
 static void log_open(void)
 {
@@ -197,6 +198,13 @@ static void log_printf(const char *fmt, ...)
     vfprintf(g_log, fmt, ap);
     va_end(ap);
     fflush(g_log);
+}
+
+static void dbg_line(const char *msg)
+{
+    if (!g_debug)
+        return;
+    log_line(msg);
 }
 
 static void log_line(const char *msg)
@@ -1107,17 +1115,25 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
 {
     (void)hPrev; (void)cmd;
     log_open();
-    log_printf("p99lfg starting\n");
+    {
+        char dbgpath[LFG_PATH_MAX];
+        GetModuleFileNameA(NULL, dbgpath, sizeof(dbgpath));
+        char *dsl = strrchr(dbgpath, '\\');
+        if (dsl)
+            strcpy(dsl + 1, "p99lfg.debug");
+        g_debug = GetFileAttributesA(dbgpath) != INVALID_FILE_ATTRIBUTES;
+    }
+    log_printf("p99lfg starting (debug=%d)\n", g_debug);
     SetUnhandledExceptionFilter(crash_handler);
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
         log_printf("WSAStartup FAILED (err=%d)\n", WSAGetLastError());
-    lfg_set_debug(log_line);
+    lfg_set_debug(dbg_line);
     {
         extern void (*tls_debug_hook)(const char *);
         extern void (*ws_debug_hook)(const char *);
-        tls_debug_hook = log_line;
-        ws_debug_hook = log_line;
+        tls_debug_hook = dbg_line;
+        ws_debug_hook = dbg_line;
     }
     InitCommonControls();
     g_state = lfg_new();
