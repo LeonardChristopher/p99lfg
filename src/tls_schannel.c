@@ -30,7 +30,147 @@ struct TlsCtx {
     int dead;
 };
 
-static int tls_connect_impl(const char *host, void *sockp, TlsCtx **out);
+static int tls_connect_impl(const char *host, void *sockp, TlsCtx **out)
+{
+    TlsCtx *t = calloc(1, sizeof(TlsCtx));
+    if (!t)
+        return -1;
+    t->sock = (SOCKET)sockp;
+
+    SCHANNEL_CRED cred;
+    memset(&cred, 0, sizeof(cred));
+    cred.dwVersion = SCHANNEL_CRED_VERSION;
+    cred.dwFlags = SCH_CRED_NO_DEFAULT_CREDS | SCH_CRED_MANUAL_CRED_VALIDATION;
+
+    SECURITY_STATUS ss = AcquireCredentialsHandleA(NULL,
+        (SEC_CHAR *)"Microsoft Unified Security Protocol Provider",
+        SECPKG_CRED_OUTBOUND, NULL, &cred, NULL, NULL, &t->hcred, NULL);
+    if (ss != SEC_E_OK) {
+        free(t);
+        return -1;
+    }
+
+    DWORD ctxreq = ISC_REQ_REPLAY_DETECT | ISC_REQ_SEQUENCE_DETECT |
+                   ISC_REQ_CONFIDENTIALITY | ISC_REQ_EXTENDED_ERROR |
+                   ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_STREAM;
+
+    SecBuffer inbufs[4];
+    SecBufferDesc indesc;
+    unsigned char inmem[16384];
+    size_t inlen = 0;
+    int have_ctx = 0;
+    int done = 0;
+
+    while (!done) {
+        SecBuffer outbufs[4];
+        SecBufferDesc outdesc;
+        DWORD attr = 0;
+
+        memset(&indesc, 0, sizeof(indesc));
+        indesc.ulVersion = SECBUFFER_VERSION;
+        if (inlen > 0) {
+            indesc.cBuffers = 4;
+            indesc.pBuffers = inbufs;
+            inbufs[0].BufferType = SECBUFFER_TOKEN;
+            inbufs[0].cbBuffer = (unsigned long)inlen;
+            inbufs[0].pvBuffer = inmem;
+            inbufs[1].BufferType = SECBUFFER_EMPTY;
+            inbufs[2].BufferType = SECBUFFER_EMPTY;
+            inbufs[3].BufferType = SECBUFFER_EMPTY;
+        }
+
+        memset(outbufs, 0, sizeof(outbufs));
+        outdesc.ulVersion = SECBUFFER_VERSION;
+        outdesc.cBuffers = 4;
+        outdesc.pBuffers = outbufs;
+        outbufs[0].BufferType = SECBUFFER_TOKEN;
+        outbufs[0].cbBuffer = 0;
+        outbufs[0].pvBuffer = NULL;
+
+        ss = InitializeSecurityContextA(&t->hcred,
+            have_ctx ? &t->hctx : NULL,
+            (SEC_CHAR *)host,
+            ctxreq, 0, 0,
+            inlen > 0 ? &indesc : NULL,
+            0, &t->hctx, &outdesc, &attr, NULL);
+        have_ctx = 1;
+
+        if (ss == SEC_E_OK) {
+            /* handshake complete; send any final flight */
+            for (int i = 0; i < 4; i++)
+                if (outbufs[i].BufferType == SECBUFFER_TOKEN && outbufs[i].cbBuffer > 0)
+                    tcp_send_all(t, outbufs[i].pvBuffer, outbufs[i].cbBuffer);
+            /* leftover decrypted data (rare during handshake) is in a
+             * SECBUFFER_DATA buffer; stash it for the first recv */
+            for (int i = 0; i < 4; i++) {
+                if (outbufs[i].BufferType == SECBUFFER_DATA && outbufs[i].cbBuffer > 0 &&
+                    outbufs[i].cbBuffer <= sizeof(t->decbuf)) {
+                    memcpy(t->decbuf, outbufs[i].pvBuffer, outbufs[i].cbBuffer);
+                    t->declen = outbufs[i].cbBuffer;
+                    t->dekpos = 0;
+                }
+            }
+            done = 1;
+            break;
+        }
+        if (ss == SEC_I_CONTINUE_NEEDED) {
+            for (int i = 0; i < 4; i++)
+                if (outbufs[i].BufferType == SECBUFFER_TOKEN && outbufs[i].cbBuffer > 0)
+                    tcp_send_all(t, outbufs[i].pvBuffer, outbufs[i].cbBuffer);
+            /* consume input fully; EXTRA bytes must move to buffer front */
+            if (inlen > 0) {
+                for (int i = 0; i < 4; i++) {
+                    if (inbufs[i].BufferType == SECBUFFER_EXTRA && inbufs[i].cbBuffer > 0) {
+                        /* EXTRA pvBuffer may be NULL: bytes are at the tail
+                         * of our own inmem buffer */
+                        size_t extra = inbufs[i].cbBuffer;
+                        memmove(inmem, inmem + inlen - extra, extra);
+                        inlen = extra;
+                        break;
+                    }
+                }
+                /* if the input was fully consumed, reset; if the caller had
+                 * EXTRA pvBuffer we already moved; either way, read more */
+            }
+            /* read more handshake bytes */
+            for (;;) {
+                int n = recv(t->sock, inmem + inlen, (int)(sizeof(inmem) - inlen), 0);
+                if (n <= 0)
+                    goto fail;
+                inlen += (size_t)n;
+                /* try to process: break to run InitializeSecurityContext again */
+                break;
+            }
+            continue;
+        }
+        if (ss == SEC_E_INCOMPLETE_MESSAGE) {
+            /* need more bytes; keep what we have and read more */
+            int n = recv(t->sock, inmem + inlen, (int)(sizeof(inmem) - inlen), 0);
+            if (n <= 0)
+                goto fail;
+            inlen += (size_t)n;
+            continue;
+        }
+        /* any other status: fail */
+        goto fail;
+    }
+
+    QueryContextAttributesA(&t->hctx, SECPKG_ATTR_STREAM_SIZES, &t->sizes);
+    t->encbuf = malloc(t->sizes.cbHeader + 16384 + t->sizes.cbTrailer + 64);
+    if (!t->encbuf)
+        goto fail;
+    t->established = 1;
+    *out = t;
+    return 0;
+fail:
+    if (have_ctx)
+        DeleteSecurityContext(&t->hctx);
+    FreeCredentialsHandle(&t->hcred);
+    free(t->encbuf);
+    free(t);
+    return -1;
+}
+
 static int tls_send_impl(TlsCtx *t, const void *data, unsigned int len);
 static int tls_recv_impl(TlsCtx *t, void *data, unsigned int len);
 static void tls_close_impl(TlsCtx *t);
@@ -257,15 +397,17 @@ static int tls_recv_impl(TlsCtx *t, void *data, unsigned int len)
         /* find the data buffer */
         DWORD got = 0;
         for (int i = 0; i < 4; i++) {
-            if (bufs[i].BufferType == SECBUFFER_DATA) {
-                DWORD c = bufs[i].cbBuffer;
-                if (c > len) {
-                    /* buffer more than requested: stash the rest */
-                    memcpy(t->decbuf, bufs[i].pvBuffer, c);
-                    t->declen = c;
+            if (bufs[i].BufferType == SECBUFFER_DATA && bufs[i].cbBuffer > 0) {
+                if (got == 0 && bufs[i].cbBuffer > len) {
+                    /* more plaintext than requested: stash it all */
+                    memcpy(t->decbuf, bufs[i].pvBuffer, bufs[i].cbBuffer);
+                    t->declen = bufs[i].cbBuffer;
                     t->dekpos = 0;
-                    continue;
+                    break;
                 }
+                DWORD c = bufs[i].cbBuffer;
+                if (got + c > len)
+                    c = len - got;
                 memcpy((char *)data + got, bufs[i].pvBuffer, c);
                 got += c;
             }
@@ -279,7 +421,8 @@ static int tls_recv_impl(TlsCtx *t, void *data, unsigned int len)
             t->dekpos += take;
             return (int)take;
         }
-        return 0;
+        /* nothing yet: keep reading until some plaintext arrives */
+        return tls_recv_impl(t, data, len);
     }
     if (ss == SEC_E_INCOMPLETE_MESSAGE)
         return 0; /* need more data; caller retries */
