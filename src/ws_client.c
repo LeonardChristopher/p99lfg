@@ -11,6 +11,7 @@
 #include <string.h>
 
 void (*ws_debug_hook)(const char *msg) = NULL;
+void (*tls_debug_hook)(const char *msg) = NULL;
 
 static void ws_dbg(const char *fmt, ...)
 {
