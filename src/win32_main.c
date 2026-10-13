@@ -423,7 +423,7 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
         group_roster_refresh();
         return;
     }
-    if (kind == 42) {
+    if (kind == 30083) {
         /* control messages first: {"join":"name:pubkey"} / {"leave":...} */
         const char *chctl = strstr(dtag, "p99lfg-g-");
         if (chctl && g_group_name[0] &&

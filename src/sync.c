@@ -221,7 +221,7 @@ int sync_handle_message(SyncState *s, const char *msg)
             }
             /* kinds 30079 (rating) / 30080 (vote): generic callback */
             if ((strcmp(kindstr, "30079") == 0 || strcmp(kindstr, "30080") == 0 ||
-                 strcmp(kindstr, "42") == 0 || strcmp(kindstr, "30081") == 0 ||
+                 strcmp(kindstr, "30083") == 0 || strcmp(kindstr, "30081") == 0 ||
                  strcmp(kindstr, "30082") == 0)
                 && s->on_generic) {
                 char content[600], pubkey[80], dtag[140];

@@ -7,7 +7,7 @@
 #include <string.h>
 #include <time.h>
 
-#define CHANNEL_KIND 42
+#define CHANNEL_KIND 30083  /* own kind-space: nos.lol rejects kind 42 ("not acceptable at this point") */
 #define CHANNEL_PREFIX "p99lfg-g-"
 
 static void json_escape(const char *in, char *out, size_t outsz)
@@ -209,7 +209,7 @@ int group_control_send(SyncState *s, const char *channel,
     memset(&ev, 0, sizeof(ev));
     snprintf(ev.pubkey, sizeof(ev.pubkey), "%s", s->pubkey);
     ev.created_at = (uint64_t)time(NULL);
-    ev.kind = 42;
+    ev.kind = 30083;
     snprintf(ev.dtag, sizeof(ev.dtag), "p99lfg-g-%s", channel);
     snprintf(ev.content, sizeof(ev.content),
              leave ? "{\"leave\":\"%s:%s\"}" : "{\"join\":\"%s:%s\"}",
