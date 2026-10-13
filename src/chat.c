@@ -231,15 +231,25 @@ static int decrypt_content(const uint8_t key[32], const char *content,
 
 /* ---- public API ---- */
 
-int chat_send_message(SyncState *s, const char *peer_pubkey_hex,
-                      const char *message)
+int chat_send_message_from(SyncState *s, const char *peer_pubkey_hex,
+                           const char *from_char, const char *message)
 {
     uint8_t key[32];
     if (derive_shared_key(s->privkey, peer_pubkey_hex, key) != 0)
         return -1;
     char content[1200];
-    if (encrypt_content(key, message, content, sizeof(content)) != 0)
-        return -1;
+    if (from_char && from_char[0]) {
+        /* the sending character rides inside the encrypted payload so only
+         * the recipient learns which toon is talking */
+        char inner[900];
+        snprintf(inner, sizeof(inner),
+                  "{\"from\":\"%s\",\"msg\":\"%s\"}", from_char, message);
+        if (encrypt_content(key, inner, content, sizeof(content)) != 0)
+            return -1;
+    } else {
+        if (encrypt_content(key, message, content, sizeof(content)) != 0)
+            return -1;
+    }
     /* kind-4 event tagged with the recipient (p tag) */
     NostrEvent ev;
     memset(&ev, 0, sizeof(ev));
@@ -290,7 +300,13 @@ int chat_send_message(SyncState *s, const char *peer_pubkey_hex,
         ws_close(&c);
     }
     return ok > 0 ? 0 : -1;
-}
+
+
+int chat_send_message(SyncState *s, const char *peer_pubkey_hex,
+                      const char *message)
+{
+    return chat_send_message_from(s, peer_pubkey_hex, NULL, message);
+}}
 
 int chat_try_decrypt(const char *privkey_hex, const char *sender_pubkey_hex,
                      const char *content, char *out, size_t outsz)
@@ -298,7 +314,28 @@ int chat_try_decrypt(const char *privkey_hex, const char *sender_pubkey_hex,
     uint8_t key[32];
     if (derive_shared_key(privkey_hex, sender_pubkey_hex, key) != 0)
         return -1;
-    return decrypt_content(key, content, out, outsz);
+    if (decrypt_content(key, content, out, outsz) != 0)
+        return -1;
+    /* unwrap {"from":"Name","msg":"text"} if present */
+    if (strncmp(out, "{\"from\":", 8) == 0) {
+        char frombuf[64] = "", msgbuf[1024] = "";
+        const char *f = out + 8;
+        const char *fe = strchr(f, '"');
+        if (fe && (size_t)(fe - f) < sizeof(frombuf)) {
+            memcpy(frombuf, f, (size_t)(fe - f));
+            const char *m = strstr(fe, ",\"msg\":\"");
+            if (m) {
+                m += 8;
+                const char *me = strrchr(m, '"');
+                if (me && (size_t)(me - m) < sizeof(msgbuf)) {
+                    memcpy(msgbuf, m, (size_t)(me - m));
+                    snprintf(out, outsz, "[%s] %s",
+                             frombuf[0] ? frombuf : "?", msgbuf);
+                }
+            }
+        }
+    }
+    return 0;
 }
 
 /* Test seam / non-relay use: produce the encrypted content blob for a

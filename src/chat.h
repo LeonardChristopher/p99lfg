@@ -11,6 +11,11 @@
 int chat_send_message(SyncState *s, const char *peer_pubkey_hex,
                       const char *message);
 
+/* Same, but labels which of your characters is speaking ("from").
+ * The name rides inside the encrypted payload (relays never see it). */
+int chat_send_message_from(SyncState *s, const char *peer_pubkey_hex,
+                           const char *from_char, const char *message);
+
 /* Try to decrypt a received kind-4 content blob. Returns 0 on success with
  * the plaintext in out; -1 if it isn't for us or is malformed. */
 int chat_try_decrypt(const char *privkey_hex, const char *sender_pubkey_hex,

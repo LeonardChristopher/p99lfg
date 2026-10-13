@@ -169,6 +169,7 @@ static const char *presence_mark(const char *name)
 #define ID_CHAR_NAME 224
 #define ID_CHAR_CLASS 225
 #define ID_CHAR_LEVEL 226
+#define ID_CHAT_FROM 230
 
 static FILE *g_log;
 
@@ -731,7 +732,18 @@ static LRESULT CALLBACK chat_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             GetWindowTextA(g_chat_input, m, sizeof(m));
             if (m[0] && g_chat_with[0]) {
                 ChatPeer *peer = chat_peer_active();
-                if (chat_send_message(&g_sync, g_chat_with, m) == 0) {
+                char frombuf[CHAR_NAME_MAX] = "";
+                {
+                    HWND combo = GetDlgItem(dlg, ID_CHAT_FROM);
+                    LRESULT ci = SendMessageA(combo, CB_GETCURSEL, 0, 0);
+                    if (ci > 0 && g_chars && (int)ci <= g_chars->count)
+                        snprintf(frombuf, sizeof(frombuf), "%s",
+                                 g_chars->chars[ci - 1].name);
+                }
+                int send_rc = frombuf[0]
+                    ? chat_send_message_from(&g_sync, g_chat_with, frombuf, m)
+                    : chat_send_message(&g_sync, g_chat_with, m);
+                if (send_rc == 0) {
                     if (peer) {
                         strncat(peer->log, "You: ", sizeof(peer->log) - strlen(peer->log) - 1);
                         strncat(peer->log, m, sizeof(peer->log) - strlen(peer->log) - 1);
@@ -817,7 +829,7 @@ static void on_chat(void)
              g_chat_name[0] ? g_chat_name : "(nobody yet)");
     HWND dlg = CreateWindowExA(0, "p99lfg_chat", title,
                               WS_OVERLAPPEDWINDOW,
-                              pr.left + 80, pr.top + 60, 420, 340,
+                              pr.left + 80, pr.top + 60, 420, 370,
                               g_hwnd, NULL, NULL, NULL);
     g_chat_edit = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
                  WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | WS_VSCROLL,
@@ -827,6 +839,17 @@ static void on_chat(void)
                  10, 240, 300, 24, dlg, (HMENU)ID_CHAT_INPUT, NULL, NULL);
     CreateWindowA("BUTTON", "Send", WS_CHILD | WS_VISIBLE,
                  315, 238, 75, 26, dlg, (HMENU)ID_CHAT_SEND, NULL, NULL);
+    CreateWindowA("STATIC", "Send as:", WS_CHILD | WS_VISIBLE,
+                 10, 270, 45, 18, dlg, NULL, NULL, NULL);
+    HWND combo = CreateWindowA("COMBOBOX", NULL,
+                 WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+                 60, 268, 150, 200, dlg, (HMENU)ID_CHAT_FROM, NULL, NULL);
+    if (g_chars) {
+        SendMessageA(combo, CB_ADDSTRING, 0, (LPARAM)"(default)");
+        for (int i = 0; i < g_chars->count; i++)
+            SendMessageA(combo, CB_ADDSTRING, 0, (LPARAM)g_chars->chars[i].name);
+    }
+    SendMessageA(combo, CB_SETCURSEL, 0, 0);
     HFONT hf = (HFONT)SendMessageA(g_hwnd, WM_GETFONT, 0, 0);
     HWND c = GetWindow(dlg, GW_CHILD);
     while (c) {
