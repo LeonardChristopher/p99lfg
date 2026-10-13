@@ -61,6 +61,11 @@ int ws_winhttp_connect(WsConn *c, const WsUrl *url)
                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!w->session)
         goto fail;
+    {
+        DWORD recv_timeout = 2000, send_timeout = 5000, conn_timeout = 5000;
+        WinHttpSetTimeouts(w->session, conn_timeout, conn_timeout,
+                           send_timeout, recv_timeout);
+    }
 
     w->connect = WinHttpConnect(w->session, whost,
                                 (INTERNET_PORT)url->port, 0);
@@ -145,15 +150,26 @@ int ws_winhttp_recv_text(WsConn *c, char *out, size_t outsz)
     WinHttpWs *w = wh_of(c);
     if (!w || !w->ws)
         return -1;
-    DWORD readn = 0;
-    WINHTTP_WEB_SOCKET_BUFFER_TYPE type;
-    DWORD r = WinHttpWebSocketReceive(w->ws, out, (DWORD)outsz - 1, &readn, &type);
-    if (r != NO_ERROR)
+    for (int attempt = 0; attempt < 20; attempt++) {
+        DWORD readn = 0;
+        WINHTTP_WEB_SOCKET_BUFFER_TYPE type;
+        DWORD r = WinHttpWebSocketReceive(w->ws, out, (DWORD)outsz - 1, &readn, &type);
+        if (r == NO_ERROR) {
+            if (type == WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE)
+                return 0;
+            out[readn] = '\0';
+            return (int)readn;
+        }
+        DWORD gle = GetLastError();
+        if (gle == ERROR_WINHTTP_TIMEOUT) {
+            Sleep(250); /* relay hasn't answered yet; keep waiting */
+            continue;
+        }
+        ws_dbg_safe("winhttp: recv failed gle=%lu", (unsigned long)gle);
         return -1;
-    if (type == WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE)
-        return 0;
-    out[readn] = '\0';
-    return (int)readn;
+    }
+    /* waited ~5s with nothing: treat as end of stream for this poll */
+    return -2;
 }
 
 void ws_winhttp_close(WsConn *c)

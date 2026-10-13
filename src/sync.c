@@ -314,6 +314,10 @@ void sync_poll(SyncState *s)
         for (int m = 0; m < 40; m++) {
             char buf[8192];
             int n = ws_recv_text(&c, buf, sizeof(buf));
+            if (n == -2) {
+                /* waited out with no data: normal end of drain */
+                break;
+            }
             if (n < 0) {
                 ws_dbg_public("sync: recv error after %d reads (%d events)", m, got_events);
                 break;
