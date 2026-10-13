@@ -6,6 +6,7 @@
 #include "chat.h"
 #include "chars.h"
 #include "settings.h"
+#include "channels.h"
 #include "fav.h"
 #include "rating.h"
 #include "qrcodegen.h"
@@ -49,6 +50,13 @@ static char g_keypath[LFG_PATH_MAX];
 static HWND g_char_list;
 static Settings g_settings;
 static char g_inipath[LFG_PATH_MAX];
+static HWND g_group_log, g_group_input, g_group_channel, g_group_roster;
+static char g_group_name[CHANNEL_NAME_MAX];
+static char g_group_log_text[8192];
+static GroupMember g_group_members[GROUP_MEMBERS_MAX];
+static int g_group_nmembers;
+static GroupMember g_group_wait[GROUP_WAIT_MAX];
+static int g_group_nwait;
 
 /* last DM per sender pubkey: simple single-conversation chat window */
 #define CHAT_LOG_MAX 4096
@@ -175,6 +183,15 @@ static const char *presence_mark(const char *name)
 #define ID_CHAR_CLASS 225
 #define ID_CHAR_LEVEL 226
 #define ID_CHAT_FROM 230
+#define ID_GROUP_TAB 240
+#define ID_GROUP_LOG 241
+#define ID_GROUP_INPUT 242
+#define ID_GROUP_SEND 243
+#define ID_GROUP_CHANNEL 244
+#define ID_GROUP_JOIN 245
+#define ID_GROUP_JOINQ 246
+#define ID_GROUP_LEAVE 247
+#define ID_GROUP_ROSTER 248
 
 static FILE *g_log;
 static int g_debug;
@@ -307,6 +324,138 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
                        const char *content, uint64_t created_at, void *ud)
 {
     (void)ud;
+    if (kind == 30081) {
+        /* group state event: adopt it (state is consolidated by the host) */
+        if (!g_group_name[0])
+            return;
+        const char *chsuffix = strstr(dtag, "p99lfg-g-");
+        if (!chsuffix)
+            return;
+        chsuffix += strlen("p99lfg-g-");
+        if (strcmp(g_group_name, chsuffix) != 0)
+            return;
+        group_state_parse(content, g_group_members, &g_group_nmembers,
+                          g_group_wait, &g_group_nwait);
+        group_roster_refresh();
+        return;
+    }
+    if (kind == 42) {
+        /* control messages first: {"join":"name:pubkey"} / {"leave":...} */
+        const char *chsuffix = strstr(dtag, "p99lfg-g-");
+        if (chsuffix && g_group_name[0] &&
+            strcmp(g_group_name, chsuffix + strlen("p99lfg-g-")) == 0) {
+            char who[600] = "";
+            const char *j = strstr(content, "\"join\":\"");
+            const char *l = strstr(content, "\"leave\":\"");
+            const char *ctl = j ? j + 7 : (l ? l + 8 : NULL);
+            if (ctl) {
+                const char *ce = strchr(ctl, '"');
+                if (ce && (size_t)(ce - ctl) < sizeof(who)) {
+                    memcpy(who, ctl, (size_t)(ce - ctl));
+                    who[ce - ctl] = '\0';
+                    if (group_am_host()) {
+                        GroupMember m;
+                        memset(&m, 0, sizeof(m));
+                        char *colon = strchr(who, ':');
+                        if (colon) {
+                            *colon = '\0';
+                            snprintf(m.name, sizeof(m.name), "%s", who);
+                            snprintf(m.pubkey, sizeof(m.pubkey), "%s", colon + 1);
+                            int already = 0;
+                            for (int i = 0; i < g_group_nmembers; i++)
+                                if (strcmp(g_group_members[i].pubkey, m.pubkey) == 0)
+                                    already = 1;
+                            if (j && !already) {
+                                if (g_group_nmembers < GROUP_MEMBERS_MAX) {
+                                    g_group_members[g_group_nmembers++] = m;
+                                } else if (g_group_nwait < GROUP_WAIT_MAX) {
+                                    g_group_wait[g_group_nwait++] = m;
+                                }
+                                group_state_publish(&g_sync, g_group_name,
+                                                    g_group_members, g_group_nmembers,
+                                                    g_group_wait, g_group_nwait);
+                            } else if (l) {
+                                for (int i = 0; i < g_group_nmembers; i++)
+                                    if (strcmp(g_group_members[i].pubkey, m.pubkey) == 0) {
+                                        memmove(&g_group_members[i], &g_group_members[i+1],
+                                                (size_t)(g_group_nmembers - i - 1) * sizeof(GroupMember));
+                                        g_group_nmembers--;
+                                        break;
+                                    }
+                                for (int i = 0; i < g_group_nwait; i++)
+                                    if (strcmp(g_group_wait[i].pubkey, m.pubkey) == 0) {
+                                        memmove(&g_group_wait[i], &g_group_wait[i+1],
+                                                (size_t)(g_group_nwait - i - 1) * sizeof(GroupMember));
+                                        g_group_nwait--;
+                                        break;
+                                    }
+                                /* promote from waitlist */
+                                if (g_group_nmembers < GROUP_MEMBERS_MAX && g_group_nwait > 0) {
+                                    g_group_members[g_group_nmembers++] = g_group_wait[0];
+                                    memmove(&g_group_wait[0], &g_group_wait[1],
+                                            (size_t)(g_group_nwait - 1) * sizeof(GroupMember));
+                                    g_group_nwait--;
+                                }
+                                group_state_publish(&g_sync, g_group_name,
+                                                    g_group_members, g_group_nmembers,
+                                                    g_group_wait, g_group_nwait);
+                            }
+                            group_roster_refresh();
+                        }
+                    }
+                    return; /* control message, not chat */
+                }
+            }
+        }
+        /* group/raid channel message. dtag = "p99lfg-g-<channel>",
+         * content = {"from":"Char","msg":"text"} (from may be absent) */
+        if (!g_group_name[0])
+            return;
+        const char *chsuffix = strstr(dtag, "p99lfg-g-");
+        if (!chsuffix)
+            return;
+        chsuffix += strlen("p99lfg-g-");
+        if (strcmp(g_group_name, chsuffix) != 0)
+            return;
+        char frombuf[64] = "";
+        const char *f = strstr(content, "\"from\":\"");
+        if (f) {
+            f += 8;
+            const char *fe = strchr(f, '"');
+            if (fe && (size_t)(fe - f) < sizeof(frombuf)) {
+                memcpy(frombuf, f, (size_t)(fe - f));
+                frombuf[fe - f] = '\0';
+            }
+        }
+        const char *m = strstr(content, "\"msg\":\"");
+        if (!m)
+            return;
+        m += 7;
+        const char *me = strrchr(m, '"');
+        if (!me)
+            return;
+        char disp[700];
+        char sendername[64] = "";
+        /* show the sender's known name, else key prefix */
+        for (int i = 0; i < g_npresence; i++)
+            if (strcmp(g_presence[i].pubkey, pubkey) == 0) {
+                snprintf(sendername, sizeof(sendername), "%s", g_presence[i].name);
+                break;
+            }
+        if (!sendername[0])
+            snprintf(sendername, sizeof(sendername), "%.8s", pubkey);
+        if (frombuf[0])
+            snprintf(disp, sizeof(disp), "%s [%s]: %.*s\r\n",
+                     sendername, frombuf, (int)(me - m), m);
+        else
+            snprintf(disp, sizeof(disp), "%s: %.*s\r\n",
+                     sendername, (int)(me - m), m);
+        strncat(g_group_log_text, disp,
+                sizeof(g_group_log_text) - strlen(g_group_log_text) - 1);
+        if (g_hwnd)
+            PostMessageA(g_hwnd, WM_USER + 4, 0, 0);
+        return;
+    }
     if (!g_ratings)
         return;
     if (kind == 30079) {
@@ -660,6 +809,8 @@ static void create_controls(HWND hwnd, HFONT hf)
                   WS_CHILD | WS_VISIBLE, 60, 340, 45, 22, hwnd, (HMENU)ID_BTN_RATE, NULL, NULL);
     CreateWindowA("BUTTON", "Chat",
                   WS_CHILD | WS_VISIBLE, 110, 340, 45, 22, hwnd, (HMENU)ID_BTN_CHAT, NULL, NULL);
+    CreateWindowA("BUTTON", "Group chat",
+                  WS_CHILD | WS_VISIBLE, 160, 340, 80, 22, hwnd, (HMENU)ID_GROUP_TAB, NULL, NULL);
     CreateWindowA("BUTTON", "Show key QR",
                   WS_CHILD | WS_VISIBLE, 160, 340, 90, 22, hwnd, (HMENU)ID_BTN_QR, NULL, NULL);
     g_st_dir = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE,
@@ -935,6 +1086,196 @@ static void on_chat(void)
     SetFocus(g_chat_input);
 }
 
+/* ---- group channel window ---- */
+static HWND g_group_wnd;
+
+static int group_am_host(void)
+{
+    /* lowest pubkey among members is host; empty group: first joiner
+     * seeds state and is host */
+    if (g_group_nmembers == 0)
+        return 1;
+    char lowest[NOSTR_PUBKEY_HEX];
+    snprintf(lowest, sizeof(lowest), "%s", g_group_members[0].pubkey);
+    for (int i = 1; i < g_group_nmembers; i++)
+        if (strcmp(g_group_members[i].pubkey, lowest) < 0)
+            snprintf(lowest, sizeof(lowest), "%s", g_group_members[i].pubkey);
+    return strcmp(g_sync.pubkey, lowest) == 0;
+}
+
+static void group_roster_refresh(void)
+{
+    if (!g_group_roster)
+        return;
+    char text[1024];
+    size_t o = 0;
+    o += (size_t)snprintf(text + o, sizeof(text) - o, "Group (%d/6):\r\n",
+                          g_group_nmembers);
+    for (int i = 0; i < g_group_nmembers; i++)
+        o += (size_t)snprintf(text + o, sizeof(text) - o, "  %s%s\r\n",
+                              g_group_members[i].name,
+                              group_am_host() ? "" : "");
+    if (g_group_nwait > 0) {
+        o += (size_t)snprintf(text + o, sizeof(text) - o,
+                              "Waiting (%d/2):\r\n", g_group_nwait);
+        for (int i = 0; i < g_group_nwait; i++)
+            o += (size_t)snprintf(text + o, sizeof(text) - o, "  %s\r\n",
+                                  g_group_wait[i].name);
+    }
+    SetWindowTextA(g_group_roster, text);
+}
+
+static void group_refresh(void)
+{
+    if (g_group_log)
+        SetWindowTextA(g_group_log, g_group_log_text);
+}
+
+static void on_group_send(HWND dlg)
+{
+    char m[512];
+    GetWindowTextA(g_group_input, m, sizeof(m));
+    if (!m[0] || !g_group_name[0])
+        return;
+    char frombuf[CHAR_NAME_MAX] = "";
+    if (g_chars && g_chars->count > 0)
+        snprintf(frombuf, sizeof(frombuf), "%s", g_chars->chars[0].name);
+    if (channel_send(&g_sync, g_group_name, frombuf, m) == 0) {
+        char disp[700];
+        snprintf(disp, sizeof(disp), "You [%s]: %s\r\n",
+                 frombuf[0] ? frombuf : "?", m);
+        strncat(g_group_log_text, disp,
+                sizeof(g_group_log_text) - strlen(g_group_log_text) - 1);
+        SetWindowTextA(g_group_input, "");
+        group_refresh();
+    } else {
+        MessageBoxA(dlg, "Send failed (no relay reachable).", "p99lfg",
+                    MB_ICONINFORMATION);
+    }
+}
+
+static void on_group_join(HWND dlg)
+{
+    char ch[CHANNEL_NAME_MAX];
+    GetWindowTextA(g_group_channel, ch, sizeof(ch));
+    if (!ch[0])
+        return;
+    /* sanitize: the channel becomes a tag */
+    for (char *p = ch; *p; p++)
+        if (!isalnum((unsigned char)*p) && *p != '-' && *p != '_')
+            *p = '_';
+    snprintf(g_group_name, sizeof(g_group_name), "%s", ch);
+    g_group_log_text[0] = '\0';
+    char title[96];
+    snprintf(title, sizeof(title), "Group: %s (semi-public channel)", ch);
+    SetWindowTextA(dlg, title);
+    char welcome[128];
+    snprintf(welcome, sizeof(welcome),
+             "--- joined #%s ---\r\n", ch);
+    strncat(g_group_log_text, welcome,
+            sizeof(g_group_log_text) - strlen(g_group_log_text) - 1);
+    group_refresh();
+}
+
+static void on_group_joinq(HWND dlg)
+{
+    if (!g_group_name[0])
+        return;
+    char myname[64] = "Player";
+    if (g_chars && g_chars->count > 0)
+        snprintf(myname, sizeof(myname), "%s", g_chars->chars[0].name);
+    if (group_control_send(&g_sync, g_group_name, myname, g_sync.pubkey, 0) != 0)
+        MessageBoxA(dlg, "Send failed (no relay reachable).", "p99lfg",
+                    MB_ICONINFORMATION);
+}
+
+static void on_group_leave(HWND dlg)
+{
+    if (!g_group_name[0])
+        return;
+    char myname[64] = "Player";
+    if (g_chars && g_chars->count > 0)
+        snprintf(myname, sizeof(myname), "%s", g_chars->chars[0].name);
+    group_control_send(&g_sync, g_group_name, myname, g_sync.pubkey, 1);
+    if (group_am_host()) {
+        /* host leaving: rebuild state without self and republish */
+        int w = 0;
+        for (int i = 0; i < g_group_nmembers; i++)
+            if (strcmp(g_group_members[i].pubkey, g_sync.pubkey) != 0 &&
+                w < GROUP_MEMBERS_MAX)
+                g_group_members[w++] = g_group_members[i];
+        g_group_nmembers = w;
+        group_state_publish(&g_sync, g_group_name, g_group_members,
+                            g_group_nmembers, g_group_wait, g_group_nwait);
+    }
+    group_roster_refresh();
+}
+
+static LRESULT CALLBACK group_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_SEND)
+        { on_group_send(dlg); return 0; }
+    if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_JOIN)
+        { on_group_join(dlg); return 0; }
+    if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_JOINQ)
+        { on_group_joinq(dlg); return 0; }
+    if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_LEAVE)
+        { on_group_leave(dlg); return 0; }
+    if (msg == WM_USER + 4)
+        { group_refresh(); return 0; }
+    return DefWindowProcA(dlg, msg, wp, lp);
+}
+
+static void on_group_window(void)
+{
+    WNDCLASSA wc = {0};
+    wc.lpfnWndProc = group_wnd_proc;
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = "p99lfg_group";
+    RegisterClassA(&wc);
+    RECT pr;
+    GetWindowRect(g_hwnd, &pr);
+    HWND dlg = CreateWindowExA(0, "p99lfg_group",
+                               g_group_name[0] ? "Group chat" : "Group chat (join a channel)",
+                               WS_OVERLAPPEDWINDOW,
+                               pr.left + 100, pr.top + 80, 640, 460,
+                               g_hwnd, NULL, NULL, NULL);
+    CreateWindowA("STATIC", "Channel:", WS_CHILD | WS_VISIBLE,
+                 10, 12, 50, 18, dlg, NULL, NULL, NULL);
+    g_group_channel = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
+                 WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                 65, 10, 140, 22, dlg, (HMENU)ID_GROUP_CHANNEL, NULL, NULL);
+    CreateWindowA("BUTTON", "Join", WS_CHILD | WS_VISIBLE,
+                 210, 9, 60, 24, dlg, (HMENU)ID_GROUP_JOIN, NULL, NULL);
+    g_group_log = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
+                 WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | WS_VSCROLL,
+                 10, 40, 400, 260, dlg, (HMENU)ID_GROUP_LOG, NULL, NULL);
+    g_group_input = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
+                 WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                 10, 310, 320, 24, dlg, (HMENU)ID_GROUP_INPUT, NULL, NULL);
+    CreateWindowA("BUTTON", "Send", WS_CHILD | WS_VISIBLE,
+                 335, 308, 75, 26, dlg, (HMENU)ID_GROUP_SEND, NULL, NULL);
+    /* group roster + join/leave */
+    g_group_roster = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
+                 WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY,
+                 420, 40, 200, 220, dlg, (HMENU)ID_GROUP_ROSTER, NULL, NULL);
+    CreateWindowA("BUTTON", "Join group", WS_CHILD | WS_VISIBLE,
+                 420, 270, 95, 26, dlg, (HMENU)ID_GROUP_JOINQ, NULL, NULL);
+    CreateWindowA("BUTTON", "Leave", WS_CHILD | WS_VISIBLE,
+                 525, 270, 95, 26, dlg, (HMENU)ID_GROUP_LEAVE, NULL, NULL);
+    HFONT hf = (HFONT)SendMessageA(g_hwnd, WM_GETFONT, 0, 0);
+    HWND c = GetWindow(dlg, GW_CHILD);
+    while (c) {
+        SendMessageA(c, WM_SETFONT, (WPARAM)hf, TRUE);
+        c = GetWindow(c, GW_HWNDNEXT);
+    }
+    if (g_group_name[0])
+        SetWindowTextA(g_group_channel, g_group_name);
+    ShowWindow(dlg, SW_SHOW);
+    group_refresh();
+}
+
 /* ---- QR identity ---- */
 /* ---- QR identity ---- */
 static uint8_t g_qr[qrcodegen_BUFFER_LEN_MAX];
@@ -1083,6 +1424,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case ID_BTN_FAV: on_fav_toggle(); return 0;
         case ID_BTN_RATE: on_rate(); return 0;
         case ID_BTN_CHAT: on_chat(); return 0;
+        case ID_GROUP_TAB: on_group_window(); return 0;
         case ID_BTN_QR: on_show_qr(); return 0;
         case ID_BTN_CHAR_ADD: on_char_add(); return 0;
         case ID_BTN_CHAR_DEL: on_char_del(); return 0;
@@ -1263,7 +1605,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
 
     g_hwnd = CreateWindowExA(0, "p99lfg", "p99lfg - Project 1999 LFG",
                              WS_OVERLAPPEDWINDOW,
-                             CW_USEDEFAULT, CW_USEDEFAULT, 510, 445,
+                             CW_USEDEFAULT, CW_USEDEFAULT, 510, 470,
                              NULL, NULL, hInst, hf);
     if (!g_hwnd) {
         log_printf("window creation FAILED (err=%lu)\n", (unsigned long)GetLastError());
