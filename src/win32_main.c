@@ -200,13 +200,6 @@ static void log_printf(const char *fmt, ...)
     fflush(g_log);
 }
 
-static void dbg_line(const char *msg)
-{
-    if (!g_debug)
-        return;
-    log_line(msg);
-}
-
 static void log_line(const char *msg)
 {
     if (g_log) {
@@ -217,6 +210,13 @@ static void log_line(const char *msg)
         }
     }
     log_printf("%s\n", msg);
+}
+
+static void dbg_line(const char *msg)
+{
+    if (!g_debug)
+        return;
+    log_line(msg);
 }
 
 static LONG WINAPI crash_handler(EXCEPTION_POINTERS *ep)
