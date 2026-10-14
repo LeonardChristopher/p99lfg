@@ -1560,6 +1560,37 @@ static void on_group_leave(HWND dlg)
     group_roster_refresh();
 }
 
+static void on_group_voice_toggle(HWND dlg)
+{
+    if (!g_group_name[0]) {
+        MessageBoxA(dlg, "Create or join a group first.",
+                    "p99lfg", MB_ICONINFORMATION);
+        return;
+    }
+    if (!g_voice_on) {
+        if (voice_open(&g_voice) != 0) {
+            MessageBoxA(dlg, "Could not bind a UDP port for voice.",
+                    "p99lfg", MB_ICONINFORMATION);
+            return;
+        }
+        g_voice_on = 1;
+        if (voice_presence_publish(&g_sync, g_group_name,
+                                   g_sync.pubkey, g_voice.port) == 0) {
+            char note[128];
+            snprintf(note, sizeof(note),
+                     "--- voice ready (UDP %d) - waiting for members ---\r\n",
+                     g_voice.port);
+            group_log_append(note);
+        } else {
+            group_log_append("--- voice: presence publish failed ---\r\n");
+        }
+    } else {
+        voice_close(&g_voice);
+        g_voice_on = 0;
+        group_log_append("--- voice off ---\r\n");
+    }
+    group_refresh();
+}
 static LRESULT CALLBACK group_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
     if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_SEND)
@@ -1639,37 +1670,6 @@ static LRESULT CALLBACK group_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
     return DefWindowProcA(dlg, msg, wp, lp);
 }
 
-static void on_group_voice_toggle(HWND dlg)
-{
-    if (!g_group_name[0]) {
-        MessageBoxA(dlg, "Create or join a group first.",
-                    "p99lfg", MB_ICONINFORMATION);
-        return;
-    }
-    if (!g_voice_on) {
-        if (voice_open(&g_voice) != 0) {
-            MessageBoxA(dlg, "Could not bind a UDP port for voice.",
-                    "p99lfg", MB_ICONINFORMATION);
-            return;
-        }
-        g_voice_on = 1;
-        if (voice_presence_publish(&g_sync, g_group_name,
-                                   g_sync.pubkey, g_voice.port) == 0) {
-            char note[128];
-            snprintf(note, sizeof(note),
-                     "--- voice ready (UDP %d) - waiting for members ---\r\n",
-                     g_voice.port);
-            group_log_append(note);
-        } else {
-            group_log_append("--- voice: presence publish failed ---\r\n");
-        }
-    } else {
-        voice_close(&g_voice);
-        g_voice_on = 0;
-        group_log_append("--- voice off ---\r\n");
-    }
-    group_refresh();
-}
 static void on_group_window(void)
 {
     WNDCLASSA wc = {0};
