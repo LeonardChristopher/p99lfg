@@ -146,7 +146,7 @@ static int ecdh_copy_x(unsigned char *output, const unsigned char *x32,
 }
 
 /* Derive the NIP-04 shared key: ECDH(privkey, peer xonly pubkey) x-coord. */
-static int derive_shared_key(const char *privkey_hex, const char *peer_pubkey_hex,
+int derive_shared_key(const char *privkey_hex, const char *peer_pubkey_hex,
                              uint8_t key[32])
 {
     uint8_t sk[32], pk[32];

@@ -358,6 +358,30 @@ Direction confirmed by the user for the next phase of work:
 
 ## 7. Work order while user is away
 
+ROUND 8 (aesthetics + voice groundwork):
+- [x] Timestamps (HH:MM) on group chat + DM lines (user-picked UX item).
+- [x] VOICE GROUNDWORK (ROADMAP section 2, phase 1):
+      - src/voice.[ch]: full-mesh UDP transport, VoicePacket framing
+        (magic/seq/stamp/len + AES-256-CBC-encrypted payload under the
+        pairwise ECDH secret - same key material as chat, per design
+        doc), per-peer dedup, loopback-testable (no audio hardware).
+      - voice presence signaling rides the group channel as a kind-9
+        control message {"voice":"pubkey:udpport"}.
+      - tests/test_voice.c: two instances exchange encrypted frames on
+        loopback UDP, assert integrity/attribution/dedup/drop-unknown;
+        presence parse round-trip. 16 checks green, in build.sh.
+      - GUI: Voice button in the group window - binds an ephemeral UDP
+        port, publishes voice presence, logs who else started voice.
+        (Video: NO. Voice capture/codec - libopus + WinMM - is the next
+        layer and NOT wired yet; the button currently only establishes
+        the transport + signaling. Don't promise audio to the user yet.)
+      - derive_shared_key un-staticed from chat.c into chat.h (shared
+        ECDH utility, used by chat AND voice).
+NEXT for voice (when continuing): libopus encode/decode at 16-24kbps
+mono 20ms; WinMM WaveIn capture + WaveOut playback on a 50ms timer;
+speaking-indicator dots in the roster; wire voice_poll into the sync
+thread loop when g_voice_on.
+
 - [x] Automated two-instance group-flow harness - DONE (round 7):
       tests/test_group_flow.c, wired into build.sh. Persistent loopback
       fake relay (stores events, per-frame REQ replies), two SyncState

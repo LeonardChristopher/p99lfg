@@ -7,6 +7,7 @@
 #include "chars.h"
 #include "settings.h"
 #include "channels.h"
+#include "voice.h"
 #include "fav.h"
 #include "rating.h"
 #include "qrcodegen.h"
@@ -59,6 +60,10 @@ static int g_group_nmembers;
 static GroupMember g_group_wait[GROUP_WAIT_MAX];
 static int g_group_nwait;
 static int g_group_is_leader;
+/* voice groundwork: UDP transport is bound and presence published;
+ * capture/codec (libopus + WinMM) is the next layer, not wired yet */
+static VoiceState g_voice;
+static int g_voice_on;
 /* g_group_log_text and the roster arrays are touched by BOTH the UI
  * thread (own sends, create/invite) and the sync thread (received
  * messages, adopted state). Unsynchronized strncat from two threads is
@@ -118,6 +123,13 @@ static char g_chat_with[NOSTR_PUBKEY_HEX];
 static char g_chat_name[64];
 static char *g_chat_log;   /* points at the active peer's log */
 static HWND g_chat_wnd, g_chat_edit, g_chat_input;
+/* HH:MM stamp for chat lines */
+static void chat_time(char *out, size_t outsz)
+{
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    snprintf(out, outsz, "%02d:%02d ", st.wHour, st.wMinute);
+}
 /* Enter-to-send: subclass procs defined near the group window (they
  * need g_group_wnd + the ID_ defines); declared here for on_chat(). */
 static WNDPROC g_group_input_proc;
@@ -277,6 +289,7 @@ static const char *presence_mark(const char *name)
 #define ID_INV_MEMBER 260
 #define ID_INV_WAIT 261
 #define ID_GROUP_CREATE 262
+#define ID_GROUP_VOICE 265
 #define ID_ROSTER_INV_ALLOW 263
 #define ID_ROSTER_INV_DISALLOW 264
 #define ID_BTN_CLEAR 250
@@ -451,10 +464,14 @@ static void on_dm(const char *sender_pubkey, const char *content, void *ud)
      * unwrapped above so msg/frombuf carry the display pieces */
     ChatPeer *peer = chat_peer_get(sender_pubkey, sender_name);
     char dispbuf[1100];
-    if (frombuf[0])
-        snprintf(dispbuf, sizeof(dispbuf), "Them [%s]: %s", frombuf, msg);
-    else
-        snprintf(dispbuf, sizeof(dispbuf), "Them: %s", msg);
+    {
+        char ts[8];
+        chat_time(ts, sizeof(ts));
+        if (frombuf[0])
+            snprintf(dispbuf, sizeof(dispbuf), "%sThem [%s]: %s", ts, frombuf, msg);
+        else
+            snprintf(dispbuf, sizeof(dispbuf), "%sThem: %s", ts, msg);
+    }
     strncat(peer->log, dispbuf, sizeof(peer->log) - strlen(peer->log) - 1);
     strncat(peer->log, "\r\n", sizeof(peer->log) - strlen(peer->log) - 1);
 
@@ -569,6 +586,29 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
         const char *chctl = strstr(dtag, "p99lfg-g-");
         if (chctl && g_group_name[0] &&
             strcmp(g_group_name, chctl + strlen("p99lfg-g-")) == 0) {
+            /* voice presence: {"voice":"pubkey:udpport"} */
+            {
+                char vpk[NOSTR_PUBKEY_HEX], vhost[64];
+                int vport = 0;
+                if (g_voice_on &&
+                    voice_presence_parse(content, vpk, sizeof(vpk),
+                                         vhost, sizeof(vhost), &vport) == 1) {
+                    /* host is learned from their actual UDP traffic;
+                     * presence just tells us the port and identity */
+                    for (int i = 0; i < g_voice.npeers; i++)
+                        if (strcmp(g_voice.peers[i].pubkey, vpk) == 0 &&
+                            g_voice.peers[i].port == vport)
+                            return; /* already known */
+                    char note[160];
+                    snprintf(note, sizeof(note),
+                             "--- %s started voice (UDP %d) ---\r\n",
+                             strcmp(pubkey, g_sync.pubkey) == 0
+                                 ? "you" : pubkey, vport);
+                    group_log_append(note);
+                    PostMessageA(g_hwnd, WM_GROUPREFRESH, 0, 0);
+                    return;
+                }
+            }
             char who[600] = "";
             const char *j = strstr(content, "\"join\":\"");
             const char *l = strstr(content, "\"leave\":\"");
@@ -667,6 +707,8 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
         if (!me)
             return;
         char disp[700];
+        char ts[8];
+        chat_time(ts, sizeof(ts));
         char sendername[64] = "";
         char username[64] = "";
         /* prefer the human's display name; fall back to char name, then key */
@@ -681,10 +723,10 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
         if (username[0])
             snprintf(sendername, sizeof(sendername), "%s", username);
         if (frombuf[0])
-            snprintf(disp, sizeof(disp), "%s [%s]: %.*s\r\n",
+            snprintf(disp, sizeof(disp), "%s%s [%s]: %.*s\r\n", ts,
                      sendername, frombuf, (int)(me - m), m);
         else
-            snprintf(disp, sizeof(disp), "%s: %.*s\r\n",
+            snprintf(disp, sizeof(disp), "%s%s: %.*s\r\n", ts,
                      sendername, (int)(me - m), m);
         group_log_append(disp);
         if (g_hwnd)
@@ -1203,6 +1245,9 @@ static LRESULT CALLBACK chat_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
                     : chat_send_message(&g_sync, g_chat_with, m);
                 if (send_rc == 0) {
                     if (peer) {
+                        char ts[8];
+                        chat_time(ts, sizeof(ts));
+                        strncat(peer->log, ts, sizeof(peer->log) - strlen(peer->log) - 1);
                         strncat(peer->log, "You: ", sizeof(peer->log) - strlen(peer->log) - 1);
                         strncat(peer->log, m, sizeof(peer->log) - strlen(peer->log) - 1);
                         strncat(peer->log, "\r\n", sizeof(peer->log) - strlen(peer->log) - 1);
@@ -1369,7 +1414,9 @@ static void on_group_send(HWND dlg)
         snprintf(frombuf, sizeof(frombuf), "%s", g_chars->chars[0].name);
     if (channel_send(&g_sync, g_group_name, frombuf, m) == 0) {
         char disp[700];
-        snprintf(disp, sizeof(disp), "You [%s]: %s\r\n",
+        char ts[8];
+        chat_time(ts, sizeof(ts));
+        snprintf(disp, sizeof(disp), "%sYou [%s]: %s\r\n", ts,
                  frombuf[0] ? frombuf : "?", m);
         group_log_append(disp);
         SetWindowTextA(g_group_input, "");
@@ -1521,6 +1568,8 @@ static LRESULT CALLBACK group_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         { on_group_join(dlg); return 0; }
     if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_CREATE)
         { on_group_create(dlg); return 0; }
+    if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_VOICE)
+        { on_group_voice_toggle(dlg); return 0; }
     if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_LEAVE)
         { on_group_leave(dlg); return 0; }
     if (msg == WM_CONTEXTMENU && (HWND)wp == g_group_roster) {
@@ -1590,6 +1639,37 @@ static LRESULT CALLBACK group_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
     return DefWindowProcA(dlg, msg, wp, lp);
 }
 
+static void on_group_voice_toggle(HWND dlg)
+{
+    if (!g_group_name[0]) {
+        MessageBoxA(dlg, "Create or join a group first.",
+                    "p99lfg", MB_ICONINFORMATION);
+        return;
+    }
+    if (!g_voice_on) {
+        if (voice_open(&g_voice) != 0) {
+            MessageBoxA(dlg, "Could not bind a UDP port for voice.",
+                    "p99lfg", MB_ICONINFORMATION);
+            return;
+        }
+        g_voice_on = 1;
+        if (voice_presence_publish(&g_sync, g_group_name,
+                                   g_sync.pubkey, g_voice.port) == 0) {
+            char note[128];
+            snprintf(note, sizeof(note),
+                     "--- voice ready (UDP %d) - waiting for members ---\r\n",
+                     g_voice.port);
+            group_log_append(note);
+        } else {
+            group_log_append("--- voice: presence publish failed ---\r\n");
+        }
+    } else {
+        voice_close(&g_voice);
+        g_voice_on = 0;
+        group_log_append("--- voice off ---\r\n");
+    }
+    group_refresh();
+}
 static void on_group_window(void)
 {
     WNDCLASSA wc = {0};
@@ -1634,6 +1714,8 @@ static void on_group_window(void)
                  420, 40, 200, 220, dlg, (HMENU)ID_GROUP_ROSTER, NULL, NULL);
     CreateWindowA("BUTTON", "Create group", WS_CHILD | WS_VISIBLE,
                  420, 270, 95, 26, dlg, (HMENU)ID_GROUP_CREATE, NULL, NULL);
+    CreateWindowA("BUTTON", "Voice", WS_CHILD | WS_VISIBLE,
+                 420, 300, 95, 26, dlg, (HMENU)ID_GROUP_VOICE, NULL, NULL);
     CreateWindowA("BUTTON", "Leave", WS_CHILD | WS_VISIBLE,
                  525, 270, 95, 26, dlg, (HMENU)ID_GROUP_LEAVE, NULL, NULL);
     HFONT hf = (HFONT)SendMessageA(g_hwnd, WM_GETFONT, 0, 0);
