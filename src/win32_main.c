@@ -18,6 +18,7 @@
 #include <windowsx.h>
 #include <commdlg.h>
 #include <commctrl.h>
+#include <mmsystem.h>
 #include <shlobj.h>
 
 #include <stdarg.h>
@@ -292,6 +293,13 @@ static const char *presence_mark(const char *name)
 #define ID_INV_WAIT 261
 #define ID_GROUP_CREATE 262
 #define ID_GROUP_VOICE 265
+#define ID_GROUP_VOICEOPT 266
+#define ID_VO_MIC 270
+#define ID_VO_OUTPUT 271
+#define ID_VO_PTT 272
+#define ID_VO_KEY 273
+#define ID_VO_OK 274
+#define ID_VO_CANCEL 275
 #define ID_ROSTER_INV_ALLOW 263
 #define ID_ROSTER_INV_DISALLOW 264
 #define ID_BTN_CLEAR 250
@@ -1617,6 +1625,160 @@ static void on_group_leave(HWND dlg)
     group_roster_refresh();
 }
 
+/* ---- Voice options dialog: mic/headset selection + push-to-talk ----
+ * Device lists come from WinMM (waveIn/waveOut enumeration). PTT key
+ * is captured live: click "Set key", press any key, it sticks. */
+static HWND g_vo_mic, g_vo_out, g_vo_ptt, g_vo_keybtn;
+static int g_vo_capturing;
+
+static void vo_key_label(char *out, size_t osz)
+{
+    if (g_settings.voice_ptt_mouse)
+        snprintf(out, osz, "Mouse button %d", g_settings.voice_ptt_button);
+    else if (g_settings.voice_ptt_key)
+        snprintf(out, osz, "Key code %d", g_settings.voice_ptt_key);
+    else
+        snprintf(out, osz, "(click Set, then press a key)");
+}
+
+static LRESULT CALLBACK vo_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == WM_KEYDOWN && g_vo_capturing) {
+        g_settings.voice_ptt_key = (int)wp;
+        g_settings.voice_ptt_mouse = 0;
+        g_vo_capturing = 0;
+        char lbl[64];
+        vo_key_label(lbl, sizeof(lbl));
+        SetWindowTextA(g_vo_keybtn, lbl);
+        return 0;
+    }
+    if (msg == WM_LBUTTONDOWN && g_vo_capturing) {
+        g_settings.voice_ptt_mouse = 1;
+        g_settings.voice_ptt_button = 1;
+        g_vo_capturing = 0;
+        char lbl[64];
+        vo_key_label(lbl, sizeof(lbl));
+        SetWindowTextA(g_vo_keybtn, lbl);
+        return 0;
+    }
+    if (msg == WM_COMMAND) {
+        int id = LOWORD(wp);
+        if (id == ID_VO_KEY) {
+            g_vo_capturing = 1;
+            SetWindowTextA(g_vo_keybtn, "press any key / click...");
+            SetFocus(dlg);
+            return 0;
+        }
+        if (id == ID_VO_OK || id == ID_VO_CANCEL) {
+            if (id == ID_VO_OK) {
+                char mic[160] = "", outp[160] = "";
+                LRESULT mi = SendMessageA(g_vo_mic, CB_GETCURSEL, 0, 0);
+                LRESULT oi = SendMessageA(g_vo_out, CB_GETCURSEL, 0, 0);
+                if (mi != CB_ERR && mi > 0)
+                    SendMessageA(g_vo_mic, CB_GETLBTEXT, mi, (LPARAM)mic);
+                if (oi != CB_ERR && oi > 0)
+                    SendMessageA(g_vo_out, CB_GETLBTEXT, oi, (LPARAM)outp);
+                snprintf(g_settings.voice_mic, sizeof(g_settings.voice_mic),
+                         "%s", mic);
+                snprintf(g_settings.voice_output,
+                         sizeof(g_settings.voice_output), "%s", outp);
+                g_settings.voice_ptt =
+                    SendMessageA(g_vo_ptt, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                settings_save(&g_settings, g_inipath);
+            }
+            DestroyWindow(dlg);
+            return 0;
+        }
+    }
+    return DefWindowProcA(dlg, msg, wp, lp);
+}
+
+static void on_voice_options(HWND parent)
+{
+    WNDCLASSA wc = {0};
+    wc.lpfnWndProc = vo_wnd_proc;
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = "p99lfg_voiceopt";
+    RegisterClassA(&wc);
+    RECT pr;
+    GetWindowRect(parent ? parent : g_hwnd, &pr);
+    HWND dlg = CreateWindowExA(WS_EX_DLGMODALFRAME, "p99lfg_voiceopt",
+                              "Voice options",
+                              WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+                              pr.left + 120, pr.top + 90, 330, 220,
+                              g_hwnd, NULL, NULL, NULL);
+    CreateWindowA("STATIC", "Microphone:", WS_CHILD | WS_VISIBLE,
+                  10, 14, 80, 20, dlg, NULL, NULL, NULL);
+    g_vo_mic = CreateWindowA("COMBOBOX", "", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
+                             95, 12, 220, 200, dlg, (HMENU)ID_VO_MIC, NULL, NULL);
+    CreateWindowA("STATIC", "Headset / speakers:", WS_CHILD | WS_VISIBLE,
+                  10, 44, 80, 20, dlg, NULL, NULL, NULL);
+    g_vo_out = CreateWindowA("COMBOBOX", "", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
+                             95, 42, 220, 200, dlg, (HMENU)ID_VO_OUTPUT, NULL, NULL);
+    g_vo_ptt = CreateWindowA("BUTTON", "Push to talk",
+                             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                             10, 78, 110, 22, dlg, (HMENU)ID_VO_PTT, NULL, NULL);
+    g_vo_keybtn = CreateWindowA("BUTTON", "", WS_CHILD | WS_VISIBLE,
+                                130, 76, 120, 24, dlg, (HMENU)ID_VO_KEY, NULL, NULL);
+    CreateWindowA("BUTTON", "OK", WS_CHILD | WS_VISIBLE,
+                  80, 130, 70, 24, dlg, (HMENU)ID_VO_OK, NULL, NULL);
+    CreateWindowA("BUTTON", "Cancel", WS_CHILD | WS_VISIBLE,
+                  160, 130, 70, 24, dlg, (HMENU)ID_VO_CANCEL, NULL, NULL);
+    HFONT hf = (HFONT)SendMessageA(g_hwnd, WM_GETFONT, 0, 0);
+    HWND c = GetWindow(dlg, GW_CHILD);
+    while (c) {
+        SendMessageA(c, WM_SETFONT, (WPARAM)hf, TRUE);
+        c = GetWindow(c, GW_HWNDNEXT);
+    }
+    /* enumerate capture devices: entry 0 = system default */
+    SendMessageA(g_vo_mic, CB_ADDSTRING, 0, (LPARAM)"(System default)");
+    {
+        UINT n = waveInGetNumDevs();
+        WAVEINCAPSA caps;
+        for (UINT i = 0; i < n && i < 20; i++) {
+            if (waveInGetDevCapsA(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR &&
+                caps.szPname[0])
+                SendMessageA(g_vo_mic, CB_ADDSTRING, 0, (LPARAM)caps.szPname);
+        }
+    }
+    SendMessageA(g_vo_out, CB_ADDSTRING, 0, (LPARAM)"(System default)");
+    {
+        UINT n = waveOutGetNumDevs();
+        WAVEOUTCAPSA caps;
+        for (UINT i = 0; i < n && i < 20; i++) {
+            if (waveOutGetDevCapsA(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR &&
+                caps.szPname[0])
+                SendMessageA(g_vo_out, CB_ADDSTRING, 0, (LPARAM)caps.szPname);
+        }
+    }
+    /* preselect saved devices (fallback: system default) */
+    {
+        int mi = 0, oi = 0;
+        char buf[160];
+        int cnt = (int)SendMessageA(g_vo_mic, CB_GETCOUNT, 0, 0);
+        for (int i = 1; i < cnt; i++) {
+            SendMessageA(g_vo_mic, CB_GETLBTEXT, i, (LPARAM)buf);
+            if (strcmp(buf, g_settings.voice_mic) == 0) { mi = i; break; }
+        }
+        cnt = (int)SendMessageA(g_vo_out, CB_GETCOUNT, 0, 0);
+        for (int i = 1; i < cnt; i++) {
+            SendMessageA(g_vo_out, CB_GETLBTEXT, i, (LPARAM)buf);
+            if (strcmp(buf, g_settings.voice_output) == 0) { oi = i; break; }
+        }
+        SendMessageA(g_vo_mic, CB_SETCURSEL, mi, 0);
+        SendMessageA(g_vo_out, CB_SETCURSEL, oi, 0);
+    }
+    SendMessageA(g_vo_ptt, BM_SETCHECK,
+                 g_settings.voice_ptt ? BST_CHECKED : BST_UNCHECKED, 0);
+    char lbl[64];
+    vo_key_label(lbl, sizeof(lbl));
+    SetWindowTextA(g_vo_keybtn, lbl);
+    g_vo_capturing = 0;
+    ShowWindow(dlg, SW_SHOW);
+    SetFocus(dlg);
+}
+
 static void on_group_voice_toggle(HWND dlg)
 {
     if (!g_group_name[0]) {
@@ -1656,6 +1818,8 @@ static LRESULT CALLBACK group_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         { on_group_join(dlg); return 0; }
     if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_CREATE)
         { on_group_create(dlg); return 0; }
+    if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_VOICEOPT)
+        { on_voice_options(dlg); return 0; }
     if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_VOICE)
         { on_group_voice_toggle(dlg); return 0; }
     if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_LEAVE)
@@ -1773,6 +1937,8 @@ static void on_group_window(void)
                  420, 270, 95, 26, dlg, (HMENU)ID_GROUP_CREATE, NULL, NULL);
     CreateWindowA("BUTTON", "Voice", WS_CHILD | WS_VISIBLE,
                  420, 300, 95, 26, dlg, (HMENU)ID_GROUP_VOICE, NULL, NULL);
+    CreateWindowA("BUTTON", "Voice options", WS_CHILD | WS_VISIBLE,
+                 420, 330, 95, 26, dlg, (HMENU)ID_GROUP_VOICEOPT, NULL, NULL);
     CreateWindowA("BUTTON", "Leave", WS_CHILD | WS_VISIBLE,
                  525, 270, 95, 26, dlg, (HMENU)ID_GROUP_LEAVE, NULL, NULL);
     HFONT hf = (HFONT)SendMessageA(g_hwnd, WM_GETFONT, 0, 0);

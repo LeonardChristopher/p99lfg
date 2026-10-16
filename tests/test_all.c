@@ -265,6 +265,23 @@ static void test_guild_settings(void)
           strcmp(r.guild_channels[0], "general") == 0 &&
           strcmp(r.guild_channels[1], "raidplanning") == 0,
           "guild channels round-trip");
+    /* voice options round-trip */
+    memset(&w, 0, sizeof(w));
+    snprintf(w.server, sizeof(w.server), "green");
+    snprintf(w.voice_mic, sizeof(w.voice_mic), "USB Microphone");
+    snprintf(w.voice_output, sizeof(w.voice_output), "Headset EA");
+    w.voice_ptt = 1;
+    w.voice_ptt_key = 112; /* F1 */
+    w.voice_ptt_mouse = 0;
+    w.voice_ptt_button = 0;
+    CHECK(settings_save(&w, gpath) == 0, "voice settings saved");
+    settings_load(&r, gpath);
+    CHECK(strcmp(r.voice_mic, "USB Microphone") == 0 &&
+          strcmp(r.voice_output, "Headset EA") == 0,
+          "voice device names round-trip");
+    CHECK(r.voice_ptt == 1 && r.voice_ptt_key == 112 &&
+          r.voice_ptt_mouse == 0,
+          "push-to-talk config round-trips");
     remove(gpath);
 }
 

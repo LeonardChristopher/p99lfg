@@ -1,5 +1,6 @@
 #include "settings.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 static void trim(char *s)
 {
@@ -25,6 +26,18 @@ void settings_load(Settings *s, const char *path)
             snprintf(s->displayname, sizeof(s->displayname), "%s", line + 5);
         else if (strncmp(line, "guild_relay=", 12) == 0)
             snprintf(s->guild_relay, sizeof(s->guild_relay), "%s", line + 12);
+        else if (strncmp(line, "voice_mic=", 10) == 0)
+            snprintf(s->voice_mic, sizeof(s->voice_mic), "%s", line + 10);
+        else if (strncmp(line, "voice_output=", 13) == 0)
+            snprintf(s->voice_output, sizeof(s->voice_output), "%s", line + 13);
+        else if (strncmp(line, "voice_ptt=", 10) == 0)
+            s->voice_ptt = atoi(line + 10) == 1;
+        else if (strncmp(line, "voice_ptt_key=", 14) == 0)
+            s->voice_ptt_key = atoi(line + 14);
+        else if (strncmp(line, "voice_ptt_mouse=", 16) == 0)
+            s->voice_ptt_mouse = atoi(line + 16) == 1;
+        else if (strncmp(line, "voice_ptt_button=", 17) == 0)
+            s->voice_ptt_button = atoi(line + 17);
         else if (strncmp(line, "guild_channel=", 14) == 0 &&
                  s->nguild_channels < GUILD_CHANNELS_MAX) {
             snprintf(s->guild_channels[s->nguild_channels],
@@ -43,6 +56,12 @@ int settings_save(const Settings *s, const char *path)
     fprintf(f, "server=%s\n", s->server);
     fprintf(f, "name=%s\n", s->displayname);
     fprintf(f, "guild_relay=%s\n", s->guild_relay);
+    fprintf(f, "voice_mic=%s\n", s->voice_mic);
+    fprintf(f, "voice_output=%s\n", s->voice_output);
+    fprintf(f, "voice_ptt=%d\n", s->voice_ptt ? 1 : 0);
+    fprintf(f, "voice_ptt_key=%d\n", s->voice_ptt_key);
+    fprintf(f, "voice_ptt_mouse=%d\n", s->voice_ptt_mouse ? 1 : 0);
+    fprintf(f, "voice_ptt_button=%d\n", s->voice_ptt_button);
     for (int i = 0; i < s->nguild_channels; i++)
         fprintf(f, "guild_channel=%s\n", s->guild_channels[i]);
     fclose(f);

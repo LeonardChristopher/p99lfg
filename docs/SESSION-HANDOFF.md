@@ -168,6 +168,18 @@ ROUND 11 (user live-test feedback, Oct 16):
       failed on live builds. All roster painting now happens on the UI
       thread via WM_GROUPREFRESH (posted everywhere state changes).
 
+- [x] VOICE OPTIONS DIALOG (user request): "Voice options" button
+      under Voice in the group window. Mic + headset/speaker dropdowns
+      (WinMM waveIn/waveOut enumeration, "(System default)" first),
+      Push-to-talk checkbox, and a Set-key button (click it, press any
+      key - captured via WM_KEYDOWN; a click captures mouse-button PTT).
+      Persisted in p99lfg.ini: voice_mic/voice_output/voice_ptt/
+      voice_ptt_key/voice_ptt_mouse/voice_ptt_button. Round-trip
+      tested. NOTE: settings are STORED and preselected but not yet
+      APPLIED - no audio capture exists yet; the codec layer
+      (WinMM WaveIn) will read these when it lands. build-windows.sh
+      was stale (missing ws_winhttp.c) - synced with the CI line.
+
 NEXT UP (in order):
 1. PERSISTENT RELAY CONNECTION (the big approved item; receipts are
    its safety net, now in place). Phased: persistent subscribe +

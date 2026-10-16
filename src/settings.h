@@ -16,6 +16,16 @@ typedef struct {
     /* channel tags (without the p99lfg-g- prefix) auto-joined at start */
     char guild_channels[GUILD_CHANNELS_MAX][GUILD_CHANNEL_NAME];
     int nguild_channels;
+    /* voice options (Voice options dialog in the group window):
+     * device names as WinMM reports them; empty = system default.
+     * push-to-talk: 0 = voice-activated/always-on (once capture is
+     * wired), 1 = hold the configured key to talk. */
+    char voice_mic[160];
+    char voice_output[160];
+    int voice_ptt;            /* 1 = push-to-talk mode */
+    int voice_ptt_key;        /* virtual-key code, e.g. VK_F1..VK_F12 */
+    int voice_ptt_mouse;      /* 1 = a mouse button is the PTT trigger */
+    int voice_ptt_button;    /* xbutton id if voice_ptt_mouse */
 } Settings;
 /* Load from path (missing file = defaults, no error). */
 void settings_load(Settings *s, const char *path);
