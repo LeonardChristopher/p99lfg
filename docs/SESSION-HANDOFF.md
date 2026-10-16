@@ -103,6 +103,22 @@ Backend / plumbing — DONE and pushed:
 
 ## 2. Done in this session (update as work completes)
 
+- [x] RELAY EXPANSION + OUTBOX/SPOOL (round 9, "chats cut off" fix):
+      - DEFAULT_RELAYS now nos.lol, relay.primal.net, nostr.wine,
+        offchain.pub, relay.damus.io (damus was timing out live on
+        Oct 14 - probed healthy alternates with a kind-9 #t p99lfg REQ;
+        damus kept as 5th since the spooler now tolerates flaky ones).
+      - SYNC_MAX_RELAYS 4 -> 6.
+      - Outbox in SyncState (32 msgs, ring): sync_send_event queues the
+        raw ["EVENT",...] when NO relay gives an explicit OK verdict;
+        returns 0 (= not lost). sync_poll flushes oldest-first, one
+        retry per pending event per poll; relays dedupe by event id so
+        retries are idempotent. sync_outbox_pending() for UI status.
+      - Tests: test_all test_outbox (queue semantics, stays queued
+        while relay down); test_group_flow phase 8 end-to-end (send
+        with all relays down -> queued -> flush on recovery -> other
+        client receives it). ALL GREEN.
+
 - [x] Wrote this handoff file (crash-resume point = this file).
 - [x] Create group button wired (ID_GROUP_CREATE 262), dangling
       `on_group_joinq` call removed (it never existed — crash damage;

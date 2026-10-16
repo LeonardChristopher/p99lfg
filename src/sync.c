@@ -100,9 +100,9 @@ size_t sync_build_content(char *out, size_t outsz, const char *name,
         name, zone, detail, lfg ? "true" : "false");
 }
 
-/* Send a raw ["EVENT",...] message to all enabled relays. Returns 0 if at
- * least one accepted it. */
-int sync_send_event(SyncState *s, const char *msg)
+/* Send a raw ["EVENT",...] message to all enabled relays, as-is (no
+ * outbox). Returns 0 if at least one accepted it. */
+static int sync_send_event_now(SyncState *s, const char *msg)
 {
     int ok = 0;
     for (int i = 0; i < s->nrelays; i++) {
@@ -143,6 +143,32 @@ int sync_send_event(SyncState *s, const char *msg)
         ws_close(&c);
     }
     return ok > 0 ? 0 : -1;
+}
+
+int sync_outbox_pending(SyncState *s)
+{
+    return s->outbox_n;
+}
+
+/* Send a raw ["EVENT",...] to all enabled relays. If none accepts (all
+ * down, slow, or rejecting), spool the message in the outbox instead of
+ * dropping it; sync_poll retries until a relay accepts. Retrying is
+ * idempotent: relays ignore duplicate event ids. Returns 0 when the
+ * message is either published or durably queued; -1 only when it could
+ * not even be queued (oversized). */
+int sync_send_event(SyncState *s, const char *msg)
+{
+    if (sync_send_event_now(s, msg) == 0)
+        return 0;
+    if (strlen(msg) >= SYNC_OUTBOX_MSG)
+        return -1;
+    snprintf(s->outbox[s->outbox_next], SYNC_OUTBOX_MSG, "%s", msg);
+    s->outbox_next = (s->outbox_next + 1) % SYNC_OUTBOX_MAX;
+    if (s->outbox_n < SYNC_OUTBOX_MAX)
+        s->outbox_n++;
+    ws_log_public("outbox: all relays failed; queued for retry (%d pending)",
+                  s->outbox_n);
+    return 0;
 }
 
 int sync_publish_char(SyncState *s, const char *name, const char *cls,
@@ -354,6 +380,24 @@ int sync_handle_message(SyncState *s, const char *msg)
 
 void sync_poll(SyncState *s)
 {
+    /* flush the outbox first: pending events get one retry attempt per
+     * poll each; those a relay finally accepts leave the queue, the rest
+     * stay for the next poll. Walk oldest-first so delivery order is
+     * preserved when multiple events are pending. */
+    if (s->outbox_n > 0) {
+        int start = (s->outbox_next - s->outbox_n + SYNC_OUTBOX_MAX) % SYNC_OUTBOX_MAX;
+        for (int k = 0; k < s->outbox_n; k++) {
+            int idx = (start + k) % SYNC_OUTBOX_MAX;
+            if (s->outbox[idx][0] == '\0')
+                continue;
+            if (sync_send_event_now(s, s->outbox[idx]) == 0) {
+                ws_log_public("outbox: event accepted by a relay (%d left)",
+                              s->outbox_n - 1);
+                s->outbox[idx][0] = '\0';
+                s->outbox_n--;
+            }
+        }
+    }
     for (int i = 0; i < s->nrelays; i++) {
         if (!s->relays[i].enabled)
             continue;

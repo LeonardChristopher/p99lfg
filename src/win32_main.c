@@ -352,6 +352,9 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS *ep)
 }
 static const char *DEFAULT_RELAYS[] = {
     "wss://nos.lol",
+    "wss://relay.primal.net",
+    "wss://nostr.wine",
+    "wss://offchain.pub",
     "wss://relay.damus.io",
 };
 

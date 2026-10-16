@@ -3,8 +3,10 @@
 
 #include "nostr.h"
 
-#define SYNC_MAX_RELAYS 4
+#define SYNC_MAX_RELAYS 6
 #define SYNC_SEEN_MAX 256
+#define SYNC_OUTBOX_MAX 32
+#define SYNC_OUTBOX_MSG 2048
 
 /* Synchronize LFG entries over Nostr relays.
  *
@@ -61,6 +63,12 @@ typedef struct {
     char seen_ids[SYNC_SEEN_MAX][NOSTR_EVENT_ID_HEX];
     int seen_n;
     int seen_next;
+    /* outbox/spool: events no relay accepted are kept here and retried on
+     * every poll until one does (relays dedupe by event id, so retrying
+     * is idempotent). A full ring overwrites the oldest entry. */
+    char outbox[SYNC_OUTBOX_MAX][SYNC_OUTBOX_MSG];
+    int outbox_n;
+    int outbox_next;
 } SyncState;
 
 void sync_init(SyncState *s, const char *keyfile_path, const char *server,
@@ -91,8 +99,13 @@ void sync_poll(SyncState *s);
 int sync_handle_message(SyncState *s, const char *msg);
 
 /* Send a raw ["EVENT",...] message to all enabled relays. Returns 0 if at
- * least one accepted it. */
+ * least one accepted it OR the event was queued in the outbox for retry
+ * (so callers never lose a message to a temporarily-down relay).
+ * sync_poll flushes the outbox. */
 int sync_send_event(SyncState *s, const char *msg);
+
+/* Number of events still waiting in the outbox for a relay to accept. */
+int sync_outbox_pending(SyncState *s);
 
 
 /* Set the DM callback (may be NULL). */

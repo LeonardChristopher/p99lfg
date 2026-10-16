@@ -225,6 +225,7 @@ static int g_generic_arrived;
 static int g_saw_join_ctl;
 static int g_saw_chat_invitee;
 static int g_saw_chat_leader;
+static int g_saw_spool_chat;
 
 static void dm_cb(const char *sender, const char *content, void *ud)
 {
@@ -251,6 +252,8 @@ static void generic_cb(int kind, const char *pubkey, const char *dtag,
             g_saw_chat_invitee = 1;
         if (strstr(content, "welcome aboard"))
             g_saw_chat_leader = 1;
+        if (strstr(content, "spool hello"))
+            g_saw_spool_chat = 1;
     }
 }
 
@@ -393,6 +396,24 @@ int main(void)
     CHECK(group_state_parse(g_generic_content, rm, &rnm, rw, &rnw) == 1 &&
           rnm == 6 && rm[5].officer == 1,
           "invitee adopts full 6-member roster untruncated");
+
+    /* 8. outbox/spool: a send while NO relay is reachable must not be
+     * lost - it queues, and the next poll with a healthy relay flushes
+     * it (the "chats cut off when a relay is down" bug). */
+    SyncState spool;
+    sync_init(&spool, "p99lfg_harness_leader.key", "green", NULL, NULL);
+    sync_add_relay(&spool, "ws://127.0.0.1:1/"); /* nothing listens: refused */
+    CHECK(channel_send(&spool, channel, "Leaderone", "spool hello") == 0,
+          "send with all relays down returns 0 (queued, not lost)");
+    CHECK(sync_outbox_pending(&spool) == 1, "message sits in the outbox");
+    sync_add_relay(&spool, url);
+    sync_poll(&spool);
+    CHECK(sync_outbox_pending(&spool) == 0,
+          "outbox flushed once a relay accepted");
+    sync_set_generic_callback(&invitee, generic_cb, NULL);
+    g_saw_spool_chat = 0;
+    sync_poll(&invitee);
+    CHECK(g_saw_spool_chat, "spooled chat delivered after relay recovered");
 
     pthread_cancel(rt);
     close(lfd);

@@ -238,6 +238,23 @@ static void test_sync_messages(void)
     CHECK(ws_parse_url("wss://relay.example.com", &u) == 0 && u.use_tls, "wss parse");
 }
 
+/* Outbox/spool: sends that no relay accepts must queue, not drop. */
+static void test_outbox(void)
+{
+    SyncState st;
+    sync_init(&st, "p99lfg_test_key.txt", "green", remote_cb, NULL);
+    sync_add_relay(&st, "ws://127.0.0.1:1/"); /* connection refused */
+    CHECK(sync_outbox_pending(&st) == 0, "outbox empty at start");
+    const char *ev = "[\"EVENT\",{\"id\":\"spool1\"}]";
+    CHECK(sync_send_event(&st, ev) == 0, "failed send returns 0 (queued)");
+    CHECK(sync_outbox_pending(&st) == 1, "one event pending");
+    CHECK(sync_send_event(&st, ev) == 0 && sync_outbox_pending(&st) == 2,
+          "second failed send also queues");
+    /* flush on poll against the same dead relay: stays queued, no loss */
+    sync_poll(&st);
+    CHECK(sync_outbox_pending(&st) == 2, "still queued while relay is down");
+}
+
 /* Import the Windows key on a mobile device: same secret, same pubkey. */
 static void test_key_import(void)
 {
@@ -529,6 +546,7 @@ int main(void)
     test_event_serialization_and_sign();
     test_core_parser();
     test_sync_messages();
+    test_outbox();
     test_key_import();
     test_favourites();
     test_qr_key();
