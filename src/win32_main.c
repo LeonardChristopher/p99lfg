@@ -60,6 +60,7 @@ static int g_group_nmembers;
 static GroupMember g_group_wait[GROUP_WAIT_MAX];
 static int g_group_nwait;
 static int g_group_is_leader;
+static ReconState g_recon;
 /* voice groundwork: UDP transport is bound and presence published;
  * capture/codec (libopus + WinMM) is the next layer, not wired yet */
 static VoiceState g_voice;
@@ -1444,8 +1445,6 @@ static void group_refresh(void)
         SendMessageA(g_group_log, EM_SCROLLCARET, 0, 0);
     }
 }
-
-static ReconState g_recon;
 
 static void on_group_send(HWND dlg)
 {
