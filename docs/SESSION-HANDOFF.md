@@ -153,6 +153,21 @@ Backend / plumbing — DONE and pushed:
       keep: guild-hosted relay + guild channels through the same
       chat flow.
 
+ROUND 11 (user live-test feedback, Oct 16):
+- [x] Invite popup is now Accept/Decline (MB_YESNO). Accept opens
+      the group window AND sends the join control (previously it only
+      opened the window - the invitee never announced the join, so
+      the host never added them and state never republished - likely
+      a major contributor to the empty-roster reports) AND registers
+      self locally so the roster is instantly non-empty. Decline
+      reverts the channel state (g_group_name cleared etc).
+      Popup now shows the inviter's display name.
+- [x] Roster thread bug FIXED: sync thread called group_roster_refresh
+      (SetWindowTextA on the roster EDIT) directly from state adoption
+      and join/leave handling - cross-thread UI access that silently
+      failed on live builds. All roster painting now happens on the UI
+      thread via WM_GROUPREFRESH (posted everywhere state changes).
+
 NEXT UP (in order):
 1. PERSISTENT RELAY CONNECTION (the big approved item; receipts are
    its safety net, now in place). Phased: persistent subscribe +

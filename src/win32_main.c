@@ -104,6 +104,7 @@ static char g_pending_popup[256];
  * thread shows it. */
 static int g_pending_invite;
 static char g_pending_invite_channel[CHANNEL_NAME_MAX];
+static char g_pending_invite_by[64];
 static char g_inv_channel[CHANNEL_NAME_MAX];
 static char g_inv_role[16];
 static char g_inv_sender[64];
@@ -460,6 +461,8 @@ static void on_dm(const char *sender_pubkey, const char *content, void *ud)
          * freeze all relay processing until clicked. Stash + post. */
         snprintf(g_pending_invite_channel, sizeof(g_pending_invite_channel),
                  "%s", ch);
+        snprintf(g_pending_invite_by, sizeof(g_pending_invite_by), "%s",
+                 sender_name);
         g_pending_invite = 1;
         PostMessageA(g_hwnd, WM_INVITEPOPUP, 1, 0);
         return;
@@ -581,7 +584,9 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
         group_state_parse(content, g_group_members, &g_group_nmembers,
                           g_group_wait, &g_group_nwait);
         group_unlock();
-        group_roster_refresh();
+        /* roster painting happens on the UI thread via WM_GROUPREFRESH;
+         * touching EDIT controls from the sync thread is unsafe and
+         * left the roster blank on live builds */
         if (g_hwnd)
             PostMessageA(g_hwnd, WM_GROUPREFRESH, 0, 0);
         return;
@@ -703,7 +708,9 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
                                                     g_group_members, g_group_nmembers,
                                                     g_group_wait, g_group_nwait);
                             }
-                            group_roster_refresh();
+                            /* UI repaint via WM_GROUPREFRESH (posted by
+                             * state adoption above); sync thread must not
+                             * touch the roster control directly */
                         }
                     }
                     return; /* control message, not chat */
@@ -2120,12 +2127,51 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
          * must never overwrite a pending invite. */
         if (g_pending_invite) {
             g_pending_invite = 0;
-            MessageBoxA(hwnd,
-                        "You have been invited to a group!\nClick OK to open it.",
-                        "p99lfg group invite", MB_ICONINFORMATION);
-            on_group_window();
-            if (g_group_channel)
-                SetWindowTextA(g_group_channel, g_group_name);
+            char invmsg[160];
+            snprintf(invmsg, sizeof(invmsg),
+                     "%s invited you to a group.\nJoin now?",
+                     g_pending_invite_by[0] ? g_pending_invite_by : "Someone");
+            if (MessageBoxA(hwnd, invmsg, "p99lfg group invite",
+                            MB_ICONQUESTION | MB_YESNO) == IDYES) {
+                /* accept: open the group window, send the join control so
+                 * the host adds us and republishes state, and register
+                 * self locally so the roster is not empty while the
+                 * consolidated state arrives. */
+                on_group_window();
+                if (g_group_channel)
+                    SetWindowTextA(g_group_channel, g_pending_invite_channel);
+                {
+                    char myname[64] = "Player";
+                    if (g_chars && g_chars->count > 0)
+                        snprintf(myname, sizeof(myname), "%s",
+                                 g_chars->chars[0].name);
+                    group_lock();
+                    int already = 0;
+                    for (int i = 0; i < g_group_nmembers; i++)
+                        if (strcmp(g_group_members[i].pubkey, g_sync.pubkey) == 0)
+                            already = 1;
+                    if (!already && g_group_nmembers < GROUP_MEMBERS_MAX) {
+                        snprintf(g_group_members[g_group_nmembers].name,
+                                 sizeof(g_group_members[0].name), "%s", myname);
+                        snprintf(g_group_members[g_group_nmembers].pubkey,
+                                 sizeof(g_group_members[0].pubkey), "%s",
+                                 g_sync.pubkey);
+                        g_group_nmembers++;
+                    }
+                    group_unlock();
+                    group_control_send(&g_sync, g_pending_invite_channel,
+                                       myname, g_sync.pubkey, 0);
+                    group_log_append("--- joined group ---\r\n");
+                }
+                group_roster_refresh();
+                group_refresh();
+            } else {
+                /* decline: leave the channel state as it was pre-invite */
+                g_group_name[0] = '\0';
+                g_group_nmembers = 0;
+                g_group_nwait = 0;
+                g_group_is_leader = 0;
+            }
         } else if (g_pending_popup[0]) {
             MessageBoxA(hwnd, g_pending_popup, "p99lfg", MB_ICONINFORMATION);
             g_pending_popup[0] = '\0';
