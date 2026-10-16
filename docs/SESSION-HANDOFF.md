@@ -137,6 +137,39 @@ Backend / plumbing — DONE and pushed:
       "directory" event (kind 30082 profile-style announce of
       guild->relay mapping) is the natural next step so users can
       join a guild without hand-editing the ini.
+- [x] CI CHASE for this round (3 fixes, ALL GREEN on 0cda426, run
+      38971293116): (1) g_recon declared at use-site - moved to the
+      globals block (the same declaration-order trap as last round:
+      win32_main.c is only compiled by CI); (2) workflow test_ws
+      build line was missing ws_winhttp.c (undefined refs on
+      mingw); (3) test_guild_settings wrote to /tmp which does not
+      exist on Windows - relative path now. LESSON reconfirmed: any
+      test or code touching filesystem paths or GUI globals must be
+      Windows-portable; CI is the only place win32_main.c compiles.
+- [x] USER-AUTHORIZED DIRECTION (this session): keep making
+      iterative improvements autonomously. Receipts use dedicated
+      control messages (option 1: own event content shape, not
+      piggybacking) - DONE. Guild plugin direction confirmed as a
+      keep: guild-hosted relay + guild channels through the same
+      chat flow.
+
+NEXT UP (in order):
+1. PERSISTENT RELAY CONNECTION (the big approved item; receipts are
+   its safety net, now in place). Phased: persistent subscribe +
+   reconnect/backoff alongside the poll, then retire the poll. Add a
+   since filter at the same time - then receipts/rebroadcast become
+   load-bearing (a missed event between reconnects is detectable and
+   recoverable, which is exactly what round 10 built).
+2. Guild directory event so users join guilds without ini editing,
+   plus a small GUI editor for guild_relay/guild_channel keys.
+3. Voice codec layer (libopus + WinMM capture, 50ms timer, roster
+   speaking dots, voice_poll in sync thread).
+4. Ease-of-install pass (approved, deferred until groups solid).
+
+KNOWN GAPS (unchanged): outbox is in-memory only (lost on app exit);
+waitlist has no manual promote UI; invite popup has no Decline;
+Voice button produces no audio yet (transport only). The recon
+spool (16) and ledger (64) are per-process, not persisted.
 
 - [x] RELAY EXPANSION + OUTBOX/SPOOL (round 9, "chats cut off" fix):
       - DEFAULT_RELAYS now nos.lol, relay.primal.net, nostr.wine,
