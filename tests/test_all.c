@@ -9,6 +9,7 @@
 #include "rating.h"
 #include "channels.h"
 #include "qrcodegen.h"
+#include "settings.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -134,7 +135,8 @@ static int g_generic_calls;
 static int g_generic_kind;
 static char g_generic_dtag[140];
 static void generic_capture_cb(int kind, const char *pubkey, const char *dtag,
-                               const char *content, uint64_t created, void *ud)
+                               const char *content, uint64_t created,
+                               const char *event_id, void *ud)
 {
     (void)pubkey; (void)content; (void)created; (void)ud;
     g_generic_calls++;
@@ -236,6 +238,68 @@ static void test_sync_messages(void)
 
     WsUrl u;
     CHECK(ws_parse_url("wss://relay.example.com", &u) == 0 && u.use_tls, "wss parse");
+}
+
+/* Guild settings: relay URL + channel list round-trip through the ini. */
+static void test_guild_settings(void)
+{
+    Settings s;
+    settings_load(&s, "/tmp/p99lfg-test-guild.ini");
+    CHECK(s.nguild_channels == 0 && !s.guild_relay[0],
+          "settings defaults with no guild");
+    remove("/tmp/p99lfg-test-guild.ini");
+    Settings w;
+    memset(&w, 0, sizeof(w));
+    snprintf(w.server, sizeof(w.server), "green");
+    snprintf(w.guild_relay, sizeof(w.guild_relay), "wss://myguild.example.com/relay");
+    snprintf(w.guild_channels[0], sizeof(w.guild_channels[0]), "general");
+    snprintf(w.guild_channels[1], sizeof(w.guild_channels[1]), "raidplanning");
+    w.nguild_channels = 2;
+    CHECK(settings_save(&w, "/tmp/p99lfg-test-guild.ini") == 0, "guild settings saved");
+    Settings r;
+    settings_load(&r, "/tmp/p99lfg-test-guild.ini");
+    CHECK(strcmp(r.guild_relay, "wss://myguild.example.com/relay") == 0,
+          "guild relay round-trips");
+    CHECK(r.nguild_channels == 2 &&
+          strcmp(r.guild_channels[0], "general") == 0 &&
+          strcmp(r.guild_channels[1], "raidplanning") == 0,
+          "guild channels round-trip");
+    remove("/tmp/p99lfg-test-guild.ini");
+}
+
+/* Delivery-audit reconciliation: ledger, spool prune on receipts, and
+ * rebroadcast of what a peer receipt did not acknowledge. */
+static void test_recon(void)
+{
+    ReconState r;
+    memset(&r, 0, sizeof(r));
+    /* ledger semantics */
+    recon_note_seen(&r, "id-aaa");
+    recon_note_seen(&r, "id-aaa"); /* idempotent */
+    recon_note_seen(&r, "id-bbb");
+    CHECK(recon_has_seen(&r, "id-aaa") && recon_has_seen(&r, "id-bbb") &&
+          !recon_has_seen(&r, "id-zzz"), "recon ledger records and dedupes");
+    /* spool: sender keeps sent messages until acknowledged */
+    recon_note_sent(&r, "id-aaa", "[\"EVENT\",{\"id\":\"id-aaa\"}]");
+    recon_note_sent(&r, "id-ccc", "[\"EVENT\",{\"id\":\"id-ccc\"}]");
+    CHECK(r.spool_n == 2, "sent messages spooled");
+    /* peer receipt acknowledging only id-aaa: ccc must survive, aaa go */
+    CHECK(recon_on_message(&r, "{\"rcpt\":\"id-aaa,id-bbb\",\"v\":1}") == 1,
+          "receipt processed");
+    CHECK(r.spool_n == 1 && strcmp(r.spool_ids[0], "id-ccc") == 0,
+          "acknowledged id pruned from spool, unacked kept");
+    /* non-receipt content is ignored */
+    CHECK(recon_on_message(&r, "{\"from\":\"x\",\"msg\":\"hi\"}") == 0,
+          "chat content is not a receipt");
+    /* rebroadcast: a receipt missing id-ccc triggers its re-send. Use a
+     * dead relay: the rebroadcast lands in the outbox (still not lost). */
+    SyncState st;
+    sync_init(&st, "p99lfg_test_key.txt", "green", remote_cb, NULL);
+    sync_add_relay(&st, "ws://127.0.0.1:1/");
+    CHECK(recon_rebroadcast_missing(&st, &r, "id-aaa,id-bbb") == 1,
+          "unacknowledged message rebroadcast");
+    CHECK(recon_rebroadcast_missing(&st, &r, "id-ccc,id-aaa") == 0,
+          "nothing rebroadcast when all acknowledged");
 }
 
 /* Outbox/spool: sends that no relay accepts must queue, not drop. */
@@ -547,6 +611,8 @@ int main(void)
     test_core_parser();
     test_sync_messages();
     test_outbox();
+    test_recon();
+    test_guild_settings();
     test_key_import();
     test_favourites();
     test_qr_key();

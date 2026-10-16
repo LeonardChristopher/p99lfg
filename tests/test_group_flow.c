@@ -226,6 +226,7 @@ static int g_saw_join_ctl;
 static int g_saw_chat_invitee;
 static int g_saw_chat_leader;
 static int g_saw_spool_chat;
+static int g_saw_ghost;
 
 static void dm_cb(const char *sender, const char *content, void *ud)
 {
@@ -236,7 +237,8 @@ static void dm_cb(const char *sender, const char *content, void *ud)
 }
 
 static void generic_cb(int kind, const char *pubkey, const char *dtag,
-                      const char *content, uint64_t created, void *ud)
+                      const char *content, uint64_t created,
+                      const char *event_id, void *ud)
 {
     (void)pubkey; (void)created; (void)ud;
     g_generic_kind = kind;
@@ -254,6 +256,8 @@ static void generic_cb(int kind, const char *pubkey, const char *dtag,
             g_saw_chat_leader = 1;
         if (strstr(content, "spool hello"))
             g_saw_spool_chat = 1;
+        if (strstr(content, "ghost message"))
+            g_saw_ghost = 1;
     }
 }
 
@@ -414,6 +418,44 @@ int main(void)
     g_saw_spool_chat = 0;
     sync_poll(&invitee);
     CHECK(g_saw_spool_chat, "spooled chat delivered after relay recovered");
+
+    /* 9. delivery-audit reconciliation end-to-end: leader sends a chat
+     * the relay never stores (dropped in flight), invitee later
+     * publishes a receipt that does NOT contain that id -> leader must
+     * rebroadcast the original event -> invitee receives it. */
+    {
+        ReconState recon_l;
+        memset(&recon_l, 0, sizeof(recon_l));
+        /* dead-relay state: simulates "every relay dropped the send".
+         * The message never reaches the relay store - exactly the
+         * scenario reconciliation exists for. */
+        SyncState ghost;
+        sync_init(&ghost, "p99lfg_harness_leader.key", "green", NULL, NULL);
+        sync_add_relay(&ghost, "ws://127.0.0.1:1/");
+        char ev_id[NOSTR_EVENT_ID_HEX];
+        char raw[4200];
+        CHECK(channel_send_ex(&ghost, channel, "Leaderone", "ghost message",
+                              ev_id, sizeof(ev_id), raw, sizeof(raw)) == 0,
+              "send with all relays down: spooled, not lost");
+        recon_note_seen(&recon_l, ev_id);
+        recon_note_sent(&recon_l, ev_id, raw);
+        CHECK(recon_l.spool_n == 1, "ghost message spooled by sender");
+
+        /* invitee publishes a receipt with an EMPTY id list (they saw
+         * nothing): rebroadcast must fire and deliver via the live relay */
+        int sent = recon_rebroadcast_missing(&leader, &recon_l, "");
+        CHECK(sent == 1, "receipt gap detected -> message rebroadcast");
+        sync_set_generic_callback(&invitee, generic_cb, NULL);
+        g_saw_ghost = 0;
+        sync_poll(&invitee);
+        CHECK(g_saw_ghost, "dropped message recovered and delivered");
+
+        /* invitee now acknowledges the id: leader prunes the spool */
+        char rcpt[256];
+        snprintf(rcpt, sizeof(rcpt), "{\"rcpt\":\"%s\",\"v\":1}", ev_id);
+        CHECK(recon_on_message(&recon_l, rcpt) == 1 && recon_l.spool_n == 0,
+              "sender spool pruned on acknowledgement");
+    }
 
     pthread_cancel(rt);
     close(lfd);

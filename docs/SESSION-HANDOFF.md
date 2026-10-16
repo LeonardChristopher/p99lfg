@@ -101,7 +101,42 @@ Backend / plumbing — DONE and pushed:
 
 ---
 
-## 2. Done in this session (update as work completes)
+## 2. Done in this session (update as work completed)
+
+- [x] DELIVERY-AUDIT RECONCILIATION (round 10, receipts - built BEFORE
+      the persistent connection per user decision, so its bugs surface
+      before the bigger change lands):
+      - channels.[ch]: ReconState - seen-id ledger (64/group), sent
+        spool (16 raw ["EVENT",...] msgs, ring), receipt control msg
+        {"rcpt":"id,id,.."} on the channel (kind 9, same family as
+        join/leave control), throttled 15s.
+      - channel_send_ex returns the signed event id + raw wire msg
+        (channel_send wraps it, no behavior change).
+      - SyncOnGeneric now carries the event id (signature change - all
+        three implementations updated: win32 on_generic, test_all
+        capture cb, harness generic_cb).
+      - Flow: sender spools each chat; receivers note every chat id as
+        seen; each client publishes its seen-id receipt ~every 30s in
+        the sync thread; on receiving a PEER receipt, the client
+        rebroadcasts any spooled msg the peer did NOT ack (identical
+        event -> relay + dedup make it a no-op for those who have it,
+        a delivery for the one missing it). Group log notes
+        "re-sent N undelivered message(s)".
+      - Tests: test_recon (ledger/spool/prune/rebroadcast semantics) +
+        harness phase 9 END-TO-END: chat sent while all relays down
+        (never reaches the store) -> peer receipt gap -> rebroadcast ->
+        delivered + spool pruned on ack. ALL GREEN.
+- [x] GUILD CHANNELS GROUNDWORK (user request): a guild hosting a
+      website runs any Nostr relay endpoint at e.g.
+      wss://theirsite/relay; p99lfg.ini gains guild_relay= (added to
+      the relay list at startup - guild traffic uses the guild site
+      as a hop, same chat flow) and guild_channel= (auto-joins the
+      first at startup; group window opens into it like the manual
+      semi-public join). Settings round-trip tested.
+      NOTE: no GUI editor for these keys yet - ini-only. A guild
+      "directory" event (kind 30082 profile-style announce of
+      guild->relay mapping) is the natural next step so users can
+      join a guild without hand-editing the ini.
 
 - [x] RELAY EXPANSION + OUTBOX/SPOOL (round 9, "chats cut off" fix):
       - DEFAULT_RELAYS now nos.lol, relay.primal.net, nostr.wine,

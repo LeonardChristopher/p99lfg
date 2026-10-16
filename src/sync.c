@@ -294,8 +294,10 @@ int sync_handle_message(SyncState *s, const char *msg)
                  strcmp(kindstr, "9") == 0 || strcmp(kindstr, "30081") == 0 ||
                  strcmp(kindstr, "30082") == 0)
                 && s->on_generic) {
-                char content[2200], pubkey[80], dtag[140];
+                char content[2200], pubkey[80], dtag[140], evid[NOSTR_EVENT_ID_HEX];
                 uint64_t created = 0;
+                evid[0] = '\0';
+                (void)json_get_string(evobj, "id", evid, sizeof(evid));
                 if (json_get_string(evobj, "content", content, sizeof(content)) >= 0 &&
                     json_get_string(evobj, "pubkey", pubkey, sizeof(pubkey)) >= 0) {
                     if (json_get_string(evobj, "d", dtag, sizeof(dtag)) < 0) {
@@ -323,7 +325,7 @@ int sync_handle_message(SyncState *s, const char *msg)
                         }
                     }
                     s->on_generic(atoi(kindstr), pubkey, dtag, content, created,
-                                  s->generic_userdata);
+                                  evid, s->generic_userdata);
                     return 1;
                 }
             }

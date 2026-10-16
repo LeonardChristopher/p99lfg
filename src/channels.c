@@ -55,9 +55,14 @@ static int json_get_string(const char *json, const char *key, char *out, size_t 
     return (int)o;
 }
 
-int channel_send(SyncState *s, const char *channel, const char *from_char,
-                 const char *text)
+int channel_send_ex(SyncState *s, const char *channel, const char *from_char,
+                     const char *text, char *id_out, size_t idsz,
+                     char *raw_out, size_t rawsz)
 {
+    if (id_out && idsz)
+        id_out[0] = '\0';
+    if (raw_out && rawsz)
+        raw_out[0] = '\0';
     if (!channel[0] || !text[0])
         return -1;
 
@@ -82,7 +87,17 @@ int channel_send(SyncState *s, const char *channel, const char *from_char,
 
     char msg[4200];
     nostr_event_message(&ev, msg, sizeof(msg));
+    if (id_out && idsz)
+        snprintf(id_out, idsz, "%s", ev.id);
+    if (raw_out && rawsz)
+        snprintf(raw_out, rawsz, "%s", msg);
     return sync_send_event(s, msg);
+}
+
+int channel_send(SyncState *s, const char *channel, const char *from_char,
+                 const char *text)
+{
+    return channel_send_ex(s, channel, from_char, text, NULL, 0, NULL, 0);
 }
 
 int channel_parse(const char *evobj_json, char *channel_out, size_t chsz,
@@ -247,4 +262,155 @@ int profile_announce(SyncState *s, const char *displayname)
     char msg[4200];
     nostr_event_message(&ev, msg, sizeof(msg));
     return sync_send_event(s, msg);
+}
+
+/* ---- Chat delivery audit / reconciliation ("receipts") ----
+ * See channels.h for the design rationale. */
+
+void recon_note_seen(ReconState *r, const char *event_id)
+{
+    if (!event_id || !event_id[0])
+        return;
+    if (recon_has_seen(r, event_id))
+        return;
+    snprintf(r->seen[r->seen_n % RECON_SEEN_MAX], NOSTR_EVENT_ID_HEX, "%s",
+             event_id);
+    r->seen_n++;
+}
+
+int recon_has_seen(ReconState *r, const char *event_id)
+{
+    if (!event_id || !event_id[0])
+        return 0;
+    int lim = r->seen_n < RECON_SEEN_MAX ? r->seen_n : RECON_SEEN_MAX;
+    for (int i = 0; i < lim; i++)
+        if (strcmp(r->seen[i], event_id) == 0)
+            return 1;
+    return 0;
+}
+
+void recon_note_sent(ReconState *r, const char *event_id, const char *raw_msg)
+{
+    if (!event_id || !event_id[0])
+        return;
+    int slot = -1;
+    for (int i = 0; i < r->spool_n && i < RECON_SPOOL_MAX; i++)
+        if (strcmp(r->spool_ids[i], event_id) == 0)
+            return; /* already spooled */
+    if (r->spool_n < RECON_SPOOL_MAX)
+        slot = r->spool_n++;
+    else
+        slot = 0; /* ring full: evict oldest (index 0 after compaction) */
+    snprintf(r->spool_ids[slot], NOSTR_EVENT_ID_HEX, "%s", event_id);
+    snprintf(r->spool[slot], RECON_SPOOL_MSG, "%s", raw_msg);
+}
+
+int recon_send_receipt(SyncState *s, ReconState *r, const char *channel)
+{
+    if (!channel[0])
+        return -1;
+    uint64_t now = (uint64_t)time(NULL);
+    if (r->last_receipt_at && now - r->last_receipt_at < 15)
+        return -1; /* throttled */
+    /* build the id list; newest-first order is fine - it's a set */
+    char ids[RECON_SEEN_MAX * (NOSTR_EVENT_ID_HEX + 1) + 8];
+    size_t o = 0;
+    int lim = r->seen_n < RECON_SEEN_MAX ? r->seen_n : RECON_SEEN_MAX;
+    for (int i = lim - 1; i >= 0 && o + sizeof(ids) - o > NOSTR_EVENT_ID_HEX + 2; i--) {
+        if (o)
+            ids[o++] = ',';
+        snprintf(ids + o, NOSTR_EVENT_ID_HEX + 1, "%s", r->seen[i]);
+        o += strlen(r->seen[i]);
+    }
+    ids[o] = '\0';
+    char content[RECON_SEEN_MAX * (NOSTR_EVENT_ID_HEX + 1) + 64];
+    snprintf(content, sizeof(content), "{\"rcpt\":\"%s\",\"v\":1}", ids);
+    NostrEvent ev;
+    memset(&ev, 0, sizeof(ev));
+    snprintf(ev.pubkey, sizeof(ev.pubkey), "%s", s->pubkey);
+    ev.created_at = now;
+    ev.kind = CHANNEL_CTL_KIND;
+    snprintf(ev.dtag, sizeof(ev.dtag), "%s%s", CHANNEL_PREFIX, channel);
+    snprintf(ev.content, sizeof(ev.content), "%s", content);
+    if (nostr_sign_event(&ev, s->privkey) != 0)
+        return -1;
+    char msg[RECON_SPOOL_MSG];
+    nostr_event_message(&ev, msg, sizeof(msg));
+    int rc = sync_send_event(s, msg);
+    if (rc == 0)
+        r->last_receipt_at = now;
+    return rc;
+}
+
+int recon_on_message(ReconState *r, const char *content)
+{
+    if (!content)
+        return -1;
+    const char *rp = strstr(content, "\"rcpt\"");
+    if (!rp)
+        return 0; /* not a receipt */
+    char ids[RECON_SEEN_MAX * (NOSTR_EVENT_ID_HEX + 1) + 8];
+    if (json_get_string(content, "rcpt", ids, sizeof(ids)) < 0)
+        return -1;
+    /* remove acknowledged ids from the spool */
+    int w = 0;
+    for (int i = 0; i < r->spool_n; i++) {
+        char pat[NOSTR_EVENT_ID_HEX + 3];
+        snprintf(pat, sizeof(pat), ",%s,", r->spool_ids[i]);
+        char *p = strstr(ids, r->spool_ids[i]);
+        (void)p; (void)pat;
+        /* membership test: the id must appear as a whole element */
+        int acked = 0;
+        {
+            /* walk the comma-separated list once */
+            const char *cur = ids;
+            while (cur && *cur) {
+                const char *comma = strchr(cur, ',');
+                size_t len = comma ? (size_t)(comma - cur) : strlen(cur);
+                if (len == strlen(r->spool_ids[i]) &&
+                    strncmp(cur, r->spool_ids[i], len) == 0) {
+                    acked = 1;
+                    break;
+                }
+                cur = comma ? comma + 1 : NULL;
+            }
+        }
+        if (!acked) {
+            if (w != i) {
+                snprintf(r->spool[w], RECON_SPOOL_MSG, "%s", r->spool[i]);
+                snprintf(r->spool_ids[w], NOSTR_EVENT_ID_HEX, "%s",
+                         r->spool_ids[i]);
+            }
+            w++;
+        }
+    }
+    r->spool_n = w;
+    return 1;
+}
+
+int recon_rebroadcast_missing(SyncState *s, ReconState *r,
+                              const char *peer_receipt_ids)
+{
+    if (!peer_receipt_ids)
+        return 0;
+    int sent = 0;
+    for (int i = 0; i < r->spool_n; i++) {
+        int acked = 0;
+        const char *cur = peer_receipt_ids;
+        while (cur && *cur) {
+            const char *comma = strchr(cur, ',');
+            size_t len = comma ? (size_t)(comma - cur) : strlen(cur);
+            if (len == strlen(r->spool_ids[i]) &&
+                strncmp(cur, r->spool_ids[i], len) == 0) {
+                acked = 1;
+                break;
+            }
+            cur = comma ? comma + 1 : NULL;
+        }
+        if (!acked) {
+            if (sync_send_event(s, r->spool[i]) == 0)
+                sent++;
+        }
+    }
+    return sent;
 }

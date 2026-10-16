@@ -21,7 +21,8 @@
 /* Callback for non-LFG, non-DM event kinds (ratings, votes): kind, pubkey,
  * d tag, content, created_at. */
 typedef void (*SyncOnGeneric)(int kind, const char *pubkey, const char *dtag,
-                               const char *content, uint64_t created_at, void *userdata);
+                               const char *content, uint64_t created_at,
+                               const char *event_id, void *userdata);
 typedef struct {
     char url[192];
     int enabled;

@@ -550,7 +550,8 @@ static void group_roster_refresh(void)
 }
 
 static void on_generic(int kind, const char *pubkey, const char *dtag,
-                       const char *content, uint64_t created_at, void *ud)
+                       const char *content, uint64_t created_at,
+                       const char *event_id, void *ud)
 {
     (void)ud;
     if (kind == 30082) {
@@ -589,6 +590,37 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
         const char *chctl = strstr(dtag, "p99lfg-g-");
         if (chctl && g_group_name[0] &&
             strcmp(g_group_name, chctl + strlen("p99lfg-g-")) == 0) {
+            /* delivery-audit receipts: {"rcpt":"id,id,..."}. A peer's
+             * receipt both prunes our spool (they have it) and triggers a
+             * rebroadcast of anything they're missing (they'll dedupe
+             * on arrival if another member already forwarded it). */
+            if (strstr(content, "\"rcpt\":\"")) {
+                if (strcmp(pubkey, g_sync.pubkey) == 0)
+                    return; /* own receipt echo */
+                char rcpt_ids[RECON_SEEN_MAX * (NOSTR_EVENT_ID_HEX + 1) + 8];
+                {
+                    /* extract the id list from the content */
+                    const char *rp = strstr(content, "\"rcpt\":\"") + 8;
+                    const char *re = strchr(rp, '"');
+                    size_t rl = re ? (size_t)(re - rp) : 0;
+                    if (rl >= sizeof(rcpt_ids))
+                        rl = sizeof(rcpt_ids) - 1;
+                    memcpy(rcpt_ids, rp, rl);
+                    rcpt_ids[rl] = '\0';
+                }
+                recon_on_message(&g_recon, content);
+                int missed = recon_rebroadcast_missing(&g_sync, &g_recon,
+                                                       rcpt_ids);
+                if (missed > 0) {
+                    char note[96];
+                    snprintf(note, sizeof(note),
+                             "--- re-sent %d undelivered message(s) ---\r\n",
+                             missed);
+                    group_log_append(note);
+                    PostMessageA(g_hwnd, WM_GROUPREFRESH, 0, 0);
+                }
+                return;
+            }
             /* voice presence: {"voice":"pubkey:udpport"} */
             {
                 char vpk[NOSTR_PUBKEY_HEX], vhost[64];
@@ -682,6 +714,8 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
          * Skip our own messages: they were appended locally at send
          * time; the relay copy comes back on the next poll and would
          * double them. */
+        if (event_id && event_id[0])
+            recon_note_seen(&g_recon, event_id);
         if (strcmp(pubkey, g_sync.pubkey) == 0)
             return;
         if (!g_group_name[0])
@@ -772,6 +806,11 @@ static DWORD WINAPI sync_thread(LPVOID arg)
                                       g_chars->chars[i].cls,
                                       g_chars->chars[i].level, "", 1);
         }
+        /* delivery audit: publish a receipt every ~30s while in a
+         * group (throttled to 15s minimum inside recon_send_receipt),
+         * so peers can detect our gaps and we detect theirs. */
+        if (g_group_name[0] && round % 6 == 5)
+            recon_send_receipt(&g_sync, &g_recon, g_group_name);
         round++;
         for (int i = 0; i < 50 && g_sync_thread_run; i++)
             Sleep(100); /* ~5s between polls */
@@ -1406,6 +1445,8 @@ static void group_refresh(void)
     }
 }
 
+static ReconState g_recon;
+
 static void on_group_send(HWND dlg)
 {
     char m[512];
@@ -1415,7 +1456,14 @@ static void on_group_send(HWND dlg)
     char frombuf[CHAR_NAME_MAX] = "";
     if (g_chars && g_chars->count > 0)
         snprintf(frombuf, sizeof(frombuf), "%s", g_chars->chars[0].name);
-    if (channel_send(&g_sync, g_group_name, frombuf, m) == 0) {
+    char ev_id[NOSTR_EVENT_ID_HEX];
+    char raw[RECON_SPOOL_MSG];
+    if (channel_send_ex(&g_sync, g_group_name, frombuf, m,
+                        ev_id, sizeof(ev_id), raw, sizeof(raw)) == 0) {
+        /* spool for delivery audit: kept until every member's receipt
+         * acknowledges the id (recon_on_message prunes it) */
+        recon_note_seen(&g_recon, ev_id);
+        recon_note_sent(&g_recon, ev_id, raw);
         char disp[700];
         char ts[8];
         chat_time(ts, sizeof(ts));
@@ -2322,6 +2370,26 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     sync_set_generic_callback(&g_sync, on_generic, NULL);
     for (int i = 0; i < (int)(sizeof(DEFAULT_RELAYS)/sizeof(DEFAULT_RELAYS[0])); i++)
         sync_add_relay(&g_sync, DEFAULT_RELAYS[i]);
+    /* guild relay (guild's own website-hosted Nostr endpoint, if
+     * configured in p99lfg.ini): same protocol, one more hop - guild
+     * channels then pass through the guild site like any other. */
+    if (g_settings.guild_relay[0])
+        sync_add_relay(&g_sync, g_settings.guild_relay);
+    /* guild channels (p99lfg.ini): auto-adopt the first one so the
+     * group window opens straight into the guild's chat - same flow as
+     * the manual semi-public Join box, but hands-free. Further guild
+     * channels can be joined manually by typing the tag. */
+    if (g_settings.nguild_channels > 0) {
+        snprintf(g_group_name, sizeof(g_group_name), "%s",
+                 g_settings.guild_channels[0]);
+        g_group_is_leader = 0;
+        g_group_nmembers = 0;
+        g_group_nwait = 0;
+        char note[128];
+        snprintf(note, sizeof(note), "--- guild channel #%s ---\r\n",
+                 g_settings.guild_channels[0]);
+        group_log_append(note);
+    }
 
     /* favourites + ratings stores next to the exe */
     char favpath[LFG_PATH_MAX];
