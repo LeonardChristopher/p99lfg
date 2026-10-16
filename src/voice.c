@@ -38,8 +38,14 @@ void voice_init(VoiceState *v)
 
 int voice_open(VoiceState *v)
 {
-    if (v->sock >= 0)
-        return 0;
+    if (v->sock >= 0 && v->port > 0)
+        return 0; /* genuinely open: bound and has a real port */
+    if (v->sock >= 0 && v->port == 0) {
+        /* zero/uninitialized state leaked a handle: close and rebind so
+         * we always advertise a real port */
+        CLOSESOCK(v->sock);
+        v->sock = -1;
+    }
     SOCKET s = socket(AF_INET, SOCK_DGRAM, 0);
     if (s == INVALID_SOCKET)
         return -1;

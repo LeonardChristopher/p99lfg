@@ -1639,7 +1639,7 @@ static void on_group_voice_toggle(HWND dlg)
                      g_voice.port);
             group_log_append(note);
         } else {
-            group_log_append("--- voice: presence publish failed ---\r\n");
+            group_log_append("--- voice: presence publish failed (relays down; will not retry - toggle voice again) ---\r\n");
         }
     } else {
         voice_close(&g_voice);
@@ -2370,6 +2370,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     }
     InitCommonControls();
     g_state = lfg_new();
+    voice_init(&g_voice); /* sock must start at -1: 0 is a VALID socket
+                            handle on Windows and left the voice toggle
+                            thinking it was already open without binding
+                            ("presence publish failed" on every click) */
     char dir[LFG_PATH_MAX];
     {
         char inipath[LFG_PATH_MAX];
