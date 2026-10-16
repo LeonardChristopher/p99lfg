@@ -243,11 +243,12 @@ static void test_sync_messages(void)
 /* Guild settings: relay URL + channel list round-trip through the ini. */
 static void test_guild_settings(void)
 {
+    const char *gpath = "p99lfg-test-guild.ini";
     Settings s;
-    settings_load(&s, "/tmp/p99lfg-test-guild.ini");
+    settings_load(&s, gpath);
     CHECK(s.nguild_channels == 0 && !s.guild_relay[0],
           "settings defaults with no guild");
-    remove("/tmp/p99lfg-test-guild.ini");
+    remove(gpath);
     Settings w;
     memset(&w, 0, sizeof(w));
     snprintf(w.server, sizeof(w.server), "green");
@@ -255,16 +256,16 @@ static void test_guild_settings(void)
     snprintf(w.guild_channels[0], sizeof(w.guild_channels[0]), "general");
     snprintf(w.guild_channels[1], sizeof(w.guild_channels[1]), "raidplanning");
     w.nguild_channels = 2;
-    CHECK(settings_save(&w, "/tmp/p99lfg-test-guild.ini") == 0, "guild settings saved");
+    CHECK(settings_save(&w, gpath) == 0, "guild settings saved");
     Settings r;
-    settings_load(&r, "/tmp/p99lfg-test-guild.ini");
+    settings_load(&r, gpath);
     CHECK(strcmp(r.guild_relay, "wss://myguild.example.com/relay") == 0,
           "guild relay round-trips");
     CHECK(r.nguild_channels == 2 &&
           strcmp(r.guild_channels[0], "general") == 0 &&
           strcmp(r.guild_channels[1], "raidplanning") == 0,
           "guild channels round-trip");
-    remove("/tmp/p99lfg-test-guild.ini");
+    remove(gpath);
 }
 
 /* Delivery-audit reconciliation: ledger, spool prune on receipts, and
