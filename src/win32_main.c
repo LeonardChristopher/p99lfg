@@ -1450,7 +1450,6 @@ static void on_chat(void)
 }
 
 /* ---- group channel window ---- */
-static HWND g_group_wnd;
 /* Enter-to-send: single-line EDIT controls in frame windows don't get
  * WM_CHAR Enter by default. Subclass the input boxes and forward Enter
  * as a click on their Send button. */
