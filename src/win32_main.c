@@ -54,6 +54,7 @@ static HWND g_char_list;
 static Settings g_settings;
 static char g_inipath[LFG_PATH_MAX];
 static HWND g_group_log, g_group_input, g_group_channel, g_group_roster;
+static HWND g_group_wnd;
 static char g_group_name[CHANNEL_NAME_MAX];
 static char g_group_log_text[8192];
 static GroupMember g_group_members[GROUP_MEMBERS_MAX];
