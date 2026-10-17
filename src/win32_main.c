@@ -70,6 +70,8 @@ static ReconState g_recon;
 static int g_voice_on;
 static int g_mic_level;        /* 0-100, posted to UI for the indicator */
 static int g_mic_transmit;     /* 1 while frames are being sent */
+static volatile int g_voice_rx_frames; /* received voice frames (diagnostic) */
+static volatile int g_voice_tx_frames; /* frames sent (diagnostic) */
 static int g_ptt_down;        /* current push-to-talk key state */
 static int g_voice_thread_run;
 static int g_node_on;
@@ -2120,9 +2122,6 @@ static void va_capture_cb(const int16_t *pcm, size_t samples, void *ud)
 }
 
 /* Decrypted incoming voice frame -> speakers (sync-thread poll). */
-static volatile int g_voice_rx_frames; /* received voice frames (diagnostic) */
-static volatile int g_voice_tx_frames; /* frames sent (diagnostic) */
-
 static void voice_frame_cb(const char *sender_pubkey, const uint8_t *frame,
                            size_t len, uint32_t stamp_ms, void *ud)
 {
