@@ -223,6 +223,25 @@ int voice_send_frame(VoiceState *v, const char *peer_pubkey,
     return sent > 0 ? 0 : -1;
 }
 
+/* Greeting/keepalive frame: a 2-byte sentinel payload. Sent a few
+ * times when voice starts or a peer appears - opens NAT mappings and
+ * lets the receiver learn our real source address (address learning
+ * happens in voice_poll regardless of payload). Receivers must not
+ * play it (see the sentinel check in the app's frame callback). */
+#define VOICE_PING_PAYLOAD "\xff\xfe"
+
+int voice_ping(VoiceState *v, const char *peer_pubkey, const char *my_privkey)
+{
+    return voice_send_frame(v, peer_pubkey, my_privkey,
+                             (const uint8_t *)VOICE_PING_PAYLOAD, 2, 0);
+}
+
+/* Forget all peers (voice off / leaving a group / manual flush). */
+void voice_flush(VoiceState *v)
+{
+    v->npeers = 0;
+}
+
 int voice_peer_register(VoiceState *v, const char *pubkey, const char *host,
                          int port)
 {

@@ -75,6 +75,13 @@ int voice_presence_publish_ip(SyncState *s, const char *channel,
                                const char *my_pubkey, int udp_port,
                                const char *my_ip);
 
+/* Send a greeting/keepalive frame to a peer (NAT punch + address
+ * learning). Returns 0 on success. */
+int voice_ping(VoiceState *v, const char *peer_pubkey, const char *my_privkey);
+
+/* Forget all peers (voice off / leaving a group / manual flush). */
+void voice_flush(VoiceState *v);
+
 /* Register/refresh a voice peer from a presence event. */
 int voice_peer_register(VoiceState *v, const char *pubkey, const char *host,
                          int port);

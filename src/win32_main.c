@@ -709,6 +709,9 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
                     EnterCriticalSection(&g_voice_lock);
                     voice_peer_register(&g_voice, vpk,
                                         vhost[0] ? vhost : NULL, vport);
+                    if (g_voice_on)
+                        for (int ping = 0; ping < 3; ping++)
+                            voice_ping(&g_voice, vpk, g_sync.privkey);
                     LeaveCriticalSection(&g_voice_lock);
                     if (was_new) {
                         char note[160];
@@ -916,8 +919,18 @@ static DWORD WINAPI voice_thread(LPVOID arg)
 {
     (void)arg;
     while (g_voice_thread_run) {
+        static int ping_tick;
         if (g_voice_on) {
             voice_poll(&g_voice, g_sync.privkey, voice_frame_cb, NULL);
+            if (++ping_tick >= 250) { /* ~5s keepalive */
+                ping_tick = 0;
+                EnterCriticalSection(&g_voice_lock);
+                for (int i = 0; i < g_voice.npeers; i++)
+                    if (g_voice.peers[i].active)
+                        voice_ping(&g_voice, g_voice.peers[i].pubkey,
+                                   g_sync.privkey);
+                LeaveCriticalSection(&g_voice_lock);
+            }
             if (g_settings.voice_ptt) {
                 if (g_settings.voice_ptt_mouse)
                     g_ptt_down = (GetKeyState(VK_XBUTTON1) & 0x8000) != 0;
@@ -1705,6 +1718,19 @@ static void on_invite(const char *name, int wait)
 
 static void on_group_leave(HWND dlg)
 {
+    if (g_voice_on) {
+        EnterCriticalSection(&g_voice_lock);
+        va_capture_close();
+        va_play_close();
+        vcodec_close(&g_vcodec);
+        voice_flush(&g_voice);
+        voice_close(&g_voice);
+        LeaveCriticalSection(&g_voice_lock);
+        g_voice_on = 0;
+        g_mic_level = 0;
+        group_log_append("--- voice off (left group) ---\r\n");
+    }
+
     if (!g_group_name[0])
         return;
     char myname[64] = "Player";
@@ -1946,6 +1972,11 @@ static void voice_frame_cb(const char *sender_pubkey, const uint8_t *frame,
                            size_t len, uint32_t stamp_ms, void *ud)
 {
     (void)sender_pubkey; (void)stamp_ms; (void)ud;
+    /* ping sentinel: counts as traffic evidence but must not decode */
+    if (len == 2 && frame[0] == 0xff && frame[1] == 0xfe) {
+        g_voice_rx_frames++;
+        return;
+    }
     g_voice_rx_frames++;
     /* decode opus -> PCM -> speakers */
     int16_t pcm[VCODEC_SAMPLES * 2];
@@ -1990,6 +2021,13 @@ static void on_group_voice_toggle(HWND dlg)
         g_voice_on = 1;
         char myip[64];
         voice_local_ip(myip, sizeof(myip));
+        /* greet already-known peers: opens NAT maps + lets them learn
+         * our real source address even before they send */
+        EnterCriticalSection(&g_voice_lock);
+        for (int i = 0; i < g_voice.npeers; i++)
+            if (g_voice.peers[i].active)
+                voice_ping(&g_voice, g_voice.peers[i].pubkey, g_sync.privkey);
+        LeaveCriticalSection(&g_voice_lock);
         if (voice_presence_publish_ip(&g_sync, g_group_name,
                                       g_sync.pubkey, g_voice.port,
                                       myip[0] ? myip : NULL) == 0) {
@@ -2002,12 +2040,16 @@ static void on_group_voice_toggle(HWND dlg)
             group_log_append("--- voice: presence publish failed (relays down; will not retry - toggle voice again) ---\r\n");
         }
     } else {
+        EnterCriticalSection(&g_voice_lock);
         va_capture_close();
         va_play_close();
         vcodec_close(&g_vcodec);
+        voice_flush(&g_voice);
         voice_close(&g_voice);
+        LeaveCriticalSection(&g_voice_lock);
         g_voice_on = 0;
         g_mic_level = 0;
+        g_voice_rx_frames = 0;
         group_log_append("--- voice off ---\r\n");
     }
     group_refresh();

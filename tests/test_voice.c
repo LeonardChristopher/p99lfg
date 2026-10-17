@@ -244,6 +244,11 @@ int main(void)
         vcodec_close(&vc);
     }
 
+    /* flush: peers forgotten, count reset */
+    CHECK(a.npeers > 0, "peers present before flush");
+    voice_flush(&a);
+    CHECK(a.npeers == 0, "flush forgets all peers");
+
     voice_close(&a);
     voice_close(&b);
     voice_close(&c);
