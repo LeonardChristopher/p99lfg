@@ -223,6 +223,32 @@ int voice_send_frame(VoiceState *v, const char *peer_pubkey,
     return sent > 0 ? 0 : -1;
 }
 
+int voice_peer_register(VoiceState *v, const char *pubkey, const char *host,
+                         int port)
+{
+    if (!pubkey || !pubkey[0] || port <= 0)
+        return -1;
+    for (int i = 0; i < v->npeers && i < VOICE_PEERS_MAX; i++) {
+        if (strcmp(v->peers[i].pubkey, pubkey) == 0) {
+            if (host && host[0])
+                snprintf(v->peers[i].host, sizeof(v->peers[i].host), "%s",
+                         host);
+            v->peers[i].port = port;
+            v->peers[i].active = 1;
+            return 0;
+        }
+    }
+    if (v->npeers >= VOICE_PEERS_MAX)
+        return -1;
+    VoicePeer *p = &v->peers[v->npeers++];
+    snprintf(p->pubkey, sizeof(p->pubkey), "%s", pubkey);
+    snprintf(p->host, sizeof(p->host), "%s", host ? host : "");
+    p->port = port;
+    p->active = 1;
+    p->last_seq = 0;
+    return 0;
+}
+
 int voice_poll(VoiceState *v, const char *my_privkey,
                VoiceFrameCb cb, void *ud)
 {
@@ -281,6 +307,13 @@ int voice_poll(VoiceState *v, const char *my_privkey,
 int voice_presence_publish(SyncState *s, const char *channel,
                            const char *my_pubkey, int udp_port)
 {
+    return voice_presence_publish_ip(s, channel, my_pubkey, udp_port, NULL);
+}
+
+int voice_presence_publish_ip(SyncState *s, const char *channel,
+                               const char *my_pubkey, int udp_port,
+                               const char *my_ip)
+{
     if (!channel[0] || udp_port <= 0)
         return -1;
     NostrEvent ev;
@@ -289,8 +322,12 @@ int voice_presence_publish(SyncState *s, const char *channel,
     ev.created_at = (uint64_t)time(NULL);
     ev.kind = 9; /* rides the channel as a control message */
     snprintf(ev.dtag, sizeof(ev.dtag), "p99lfg-g-%s", channel);
-    snprintf(ev.content, sizeof(ev.content),
-             "{\"voice\":\"%s:%d\"}", my_pubkey, udp_port);
+    if (my_ip && my_ip[0])
+        snprintf(ev.content, sizeof(ev.content),
+                 "{\"voice\":\"%s:%s:%d\"}", my_pubkey, my_ip, udp_port);
+    else
+        snprintf(ev.content, sizeof(ev.content),
+                 "{\"voice\":\"%s:%d\"}", my_pubkey, udp_port);
     if (nostr_sign_event(&ev, s->privkey) != 0)
         return -1;
     char msg[4200];
@@ -309,12 +346,23 @@ int voice_presence_parse(const char *content, char *pubkey_out,
     const char *colon = strchr(v, ':');
     if (!colon)
         return 0;
-    /* pubkey:port */
+    /* pubkey:port  OR  pubkey:ip:port */
+    const char *colon2 = strchr(colon + 1, ':');
     if ((size_t)(colon - v) >= psz)
         return 0;
     memcpy(pubkey_out, v, (size_t)(colon - v));
     pubkey_out[colon - v] = '\0';
-    *port_out = atoi(colon + 1);
-    host_out[0] = '\0'; /* host is learned from actual UDP traffic */
+    if (colon2) {
+        /* pubkey:ip:port */
+        size_t iplen = (size_t)(colon2 - (colon + 1));
+        if (iplen >= hsz)
+            iplen = hsz - 1;
+        memcpy(host_out, colon + 1, iplen);
+        host_out[iplen] = '\0';
+        *port_out = atoi(colon2 + 1);
+    } else {
+        *port_out = atoi(colon + 1);
+        host_out[0] = '\0'; /* legacy presence: host learned from traffic */
+    }
     return 1;
 }

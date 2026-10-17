@@ -188,7 +188,40 @@ ROUND 11 (user live-test feedback, Oct 16):
       (3) Voice button relabeled "Voice (setup)" until the codec
       layer lands - it only does transport/presence.
 
+- [x] VOICE AUDIO LAYER (round 12 - mic/speakers/PTT feedback, user
+      reported "mic or speakers not working" + no way to verify PTT):
+      - src/voice_audio.[ch]: WinMM capture (4 rotating buffers, 16kHz
+        mono 16-bit 20ms frames) + playback (3 buffers, drop-when-
+        lagging), device-by-name matching with system-default
+        fallback. Portable pure logic: vptt_gate (PTT), vptt_level.
+      - Presence now carries the sender's IP (pubkey:ip:port;
+        back-compat parse for pubkey:port) - fixes the chicken-and-egg
+        where peers never learned addresses because "traffic learns
+        host" but nobody could send first.
+      - voice_peer_register(): upsert peer from presence; GUI presence
+        handler now actually REGISTERS peers (before: only logged
+        "started voice" - frames had no destination).
+      - PTT: global key state via GetAsyncKeyState polled every 30ms
+        in the sync thread's reworked wait loop (was a flat 5s sleep -
+        far too coarse for 20ms audio; the loop now services voice at
+        30ms between relay polls). Mouse4 (XBUTTON1) for mouse PTT.
+      - MIC INDICATOR in the group window: "MIC: off" / "MIC: push
+        your key" / "MIC: LIVE [####  ]" with a live loudness bar,
+        repainted ~15fps via WM_MICUPDATE. This is the verify-your-mic
+        feature the user asked for.
+      - Voice button now opens mic+speakers on toggle; failure paths
+        message clearly (mic fail blocks, speaker fail warns).
+      - Tests: presence-with-ip parse, peer upsert, PTT gate, level
+        meter (all portable). WinMM paths are Windows-only, exercised
+        by live use.
+      - STILL RAW PCM (640B/20ms = ~32kB/s) - fine on LAN, Opus
+        encode/decode is the next layer for internet use.
+
 NEXT UP (in order):
+1. PERSISTENT RELAY CONNECTION
+2. Opus codec layer (bandwidth: raw PCM is LAN-ok, internet needs it)
+3. Guild directory event + GUI editor for guild keys
+4. Ease-of-install pass
 1. PERSISTENT RELAY CONNECTION (the big approved item; receipts are
    its safety net, now in place). Phased: persistent subscribe +
    reconnect/backoff alongside the poll, then retire the poll. Add a

@@ -8,6 +8,7 @@
 #include "settings.h"
 #include "channels.h"
 #include "voice.h"
+#include "voice_audio.h"
 #include "fav.h"
 #include "rating.h"
 #include "qrcodegen.h"
@@ -63,10 +64,35 @@ static GroupMember g_group_wait[GROUP_WAIT_MAX];
 static int g_group_nwait;
 static int g_group_is_leader;
 static ReconState g_recon;
+static int g_voice_on;
+static int g_mic_level;        /* 0-100, posted to UI for the indicator */
+static int g_ptt_down;        /* current push-to-talk key state */
+static HWND g_voice_indicator; /* "MIC: [####  ] hot/off" label */
+
+/* My LAN address for voice presence: whatever the OS picks for an
+ * outbound datagram (works even with no DNS/network). */
+static void voice_local_ip(char *out, size_t osz)
+{
+    out[0] = '\0';
+    SOCKET tmp = socket(AF_INET, SOCK_DGRAM, 0);
+    if (tmp == INVALID_SOCKET)
+        return;
+    struct sockaddr_in dest;
+    memset(&dest, 0, sizeof(dest));
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons(9); /* discard port */
+    inet_pton(AF_INET, "8.8.8.8", &dest.sin_addr);
+    if (connect(tmp, (struct sockaddr *)&dest, sizeof(dest)) == 0) {
+        struct sockaddr_in local;
+        int sl = sizeof(local);
+        if (getsockname(tmp, (struct sockaddr *)&local, &sl) == 0)
+            inet_ntop(AF_INET, &local.sin_addr, out, (socklen_t)osz);
+    }
+    closesocket(tmp);
+}
 /* voice groundwork: UDP transport is bound and presence published;
  * capture/codec (libopus + WinMM) is the next layer, not wired yet */
 static VoiceState g_voice;
-static int g_voice_on;
 /* g_group_log_text and the roster arrays are touched by BOTH the UI
  * thread (own sends, create/invite) and the sync thread (received
  * messages, adopted state). Unsynchronized strncat from two threads is
@@ -167,6 +193,7 @@ static ChatPeer *chat_peer_active(void)
 #define WM_DMARRIVED (WM_USER + 3)
 #define WM_GROUPREFRESH (WM_USER + 5)
 #define WM_INVITEPOPUP (WM_USER + 6)
+#define WM_MICUPDATE (WM_USER + 7)
 
 /* ---- last-seen presence (option 1: freshness from event timestamps) ---- */
 #define PRESENCE_MAX 512
@@ -657,19 +684,25 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
                 if (g_voice_on &&
                     voice_presence_parse(content, vpk, sizeof(vpk),
                                          vhost, sizeof(vhost), &vport) == 1) {
-                    /* host is learned from their actual UDP traffic;
-                     * presence just tells us the port and identity */
+                    if (strcmp(vpk, g_sync.pubkey) == 0)
+                        return; /* own presence echo */
+                    /* register/refresh the peer so frames can be routed
+                     * to them immediately (presence now carries ip) */
+                    int was_new = 1;
                     for (int i = 0; i < g_voice.npeers; i++)
-                        if (strcmp(g_voice.peers[i].pubkey, vpk) == 0 &&
-                            g_voice.peers[i].port == vport)
-                            return; /* already known */
-                    char note[160];
-                    snprintf(note, sizeof(note),
-                             "--- %s started voice (UDP %d) ---\r\n",
-                             strcmp(pubkey, g_sync.pubkey) == 0
-                                 ? "you" : pubkey, vport);
-                    group_log_append(note);
-                    PostMessageA(g_hwnd, WM_GROUPREFRESH, 0, 0);
+                        if (strcmp(g_voice.peers[i].pubkey, vpk) == 0)
+                            was_new = 0;
+                    voice_peer_register(&g_voice, vpk,
+                                        vhost[0] ? vhost : NULL, vport);
+                    if (was_new) {
+                        char note[160];
+                        snprintf(note, sizeof(note),
+                                 "--- %s started voice (UDP %d) ---\r\n",
+                                 strcmp(pubkey, g_sync.pubkey) == 0
+                                     ? "you" : pubkey, vport);
+                        group_log_append(note);
+                        PostMessageA(g_hwnd, WM_GROUPREFRESH, 0, 0);
+                    }
                     return;
                 }
             }
@@ -852,8 +885,26 @@ static DWORD WINAPI sync_thread(LPVOID arg)
         if (g_group_name[0] && round % 6 == 5)
             recon_send_receipt(&g_sync, &g_recon, g_group_name);
         round++;
-        for (int i = 0; i < 50 && g_sync_thread_run; i++)
-            Sleep(100); /* ~5s between polls */
+        /* ~5s between relay polls, but voice needs ~20ms service:
+         * poll PTT + incoming audio every 30ms inside the wait. */
+        for (int i = 0; i < 166 && g_sync_thread_run; i++) {
+            if (g_voice_on) {
+                voice_poll(&g_voice, g_sync.privkey, voice_frame_cb, NULL);
+                if (g_settings.voice_ptt) {
+                    if (g_settings.voice_ptt_mouse)
+                        g_ptt_down = (GetKeyState(VK_XBUTTON1) & 0x8000) != 0;
+                    else if (g_settings.voice_ptt_key)
+                        g_ptt_down = (GetAsyncKeyState(g_settings.voice_ptt_key)
+                                      & 0x8000) != 0;
+                    else
+                        g_ptt_down = 0;
+                }
+                /* repaint the indicator at ~15fps: level while held,
+                 * "push your key" prompt while not */
+                PostMessageA(g_hwnd, WM_MICUPDATE, 0, 0);
+            }
+            Sleep(30);
+        }
     }
     return 0;
 }
@@ -1802,6 +1853,33 @@ static void on_voice_options(HWND parent)
     SetFocus(dlg);
 }
 
+/* Called on the WinMM audio thread: gate on push-to-talk, ship the
+ * frame to every voice peer, and publish the mic level for the UI
+ * indicator (atomic-ish int, read on the UI thread). */
+static void va_capture_cb(const int16_t *pcm, size_t samples, void *ud)
+{
+    (void)ud;
+    int transmit = vptt_gate(g_settings.voice_ptt, g_ptt_down);
+    g_mic_level = transmit ? vptt_level(pcm, samples) : 0;
+    if (!transmit)
+        return;
+    uint32_t stamp = (uint32_t)GetTickCount();
+    for (int i = 0; i < g_voice.npeers; i++)
+        if (g_voice.peers[i].active && g_voice.peers[i].port > 0)
+            voice_send_frame(&g_voice, g_voice.peers[i].pubkey,
+                             g_sync.privkey, (const uint8_t *)pcm,
+                             samples * 2, stamp);
+}
+
+/* Decrypted incoming voice frame -> speakers (sync-thread poll). */
+static void voice_frame_cb(const char *sender_pubkey, const uint8_t *frame,
+                           size_t len, uint32_t stamp_ms, void *ud)
+{
+    (void)sender_pubkey; (void)stamp_ms; (void)ud;
+    if (len >= 2)
+        va_play_frame((const int16_t *)frame, len / 2);
+}
+
 static void on_group_voice_toggle(HWND dlg)
 {
     if (!g_group_name[0]) {
@@ -1815,9 +1893,24 @@ static void on_group_voice_toggle(HWND dlg)
                     "p99lfg", MB_ICONINFORMATION);
             return;
         }
+        if (va_capture_open(g_settings.voice_mic, va_capture_cb, NULL) != 0) {
+            voice_close(&g_voice);
+            MessageBoxA(dlg, "Could not open the microphone.\n"
+                        "Check Voice options (device selection).",
+                        "p99lfg", MB_ICONINFORMATION);
+            return;
+        }
+        if (va_play_open(g_settings.voice_output) != 0) {
+            /* mic works, speakers failed: voice without hearing */
+            group_log_append("--- voice: could not open speakers (check "
+                             "Voice options) ---\r\n");
+        }
         g_voice_on = 1;
-        if (voice_presence_publish(&g_sync, g_group_name,
-                                   g_sync.pubkey, g_voice.port) == 0) {
+        char myip[64];
+        voice_local_ip(myip, sizeof(myip));
+        if (voice_presence_publish_ip(&g_sync, g_group_name,
+                                      g_sync.pubkey, g_voice.port,
+                                      myip[0] ? myip : NULL) == 0) {
             char note[128];
             snprintf(note, sizeof(note),
                      "--- voice ready (UDP %d) - waiting for members ---\r\n",
@@ -1827,11 +1920,15 @@ static void on_group_voice_toggle(HWND dlg)
             group_log_append("--- voice: presence publish failed (relays down; will not retry - toggle voice again) ---\r\n");
         }
     } else {
+        va_capture_close();
+        va_play_close();
         voice_close(&g_voice);
         g_voice_on = 0;
+        g_mic_level = 0;
         group_log_append("--- voice off ---\r\n");
     }
     group_refresh();
+    PostMessageA(g_hwnd, WM_MICUPDATE, 0, 0);
 }
 static LRESULT CALLBACK group_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -1995,6 +2092,8 @@ static void on_group_window(void)
                  420, 300, 95, 26, dlg, (HMENU)ID_GROUP_VOICE, NULL, NULL);
     CreateWindowA("BUTTON", "Voice options", WS_CHILD | WS_VISIBLE,
                  420, 330, 95, 26, dlg, (HMENU)ID_GROUP_VOICEOPT, NULL, NULL);
+    g_voice_indicator = CreateWindowA("STATIC", "MIC: off", WS_CHILD | WS_VISIBLE,
+                                      420, 362, 200, 18, dlg, NULL, NULL, NULL);
     CreateWindowA("BUTTON", "Leave", WS_CHILD | WS_VISIBLE,
                  525, 270, 95, 26, dlg, (HMENU)ID_GROUP_LEAVE, NULL, NULL);
     HFONT hf = (HFONT)SendMessageA(g_hwnd, WM_GETFONT, 0, 0);
@@ -2342,6 +2441,30 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         group_refresh();
         group_roster_refresh();
         return 0;
+    case WM_MICUPDATE: {
+        /* audio thread posted a new mic level: paint the indicator.
+         * off    = capture not running or PTT not held
+         * [####  ] = transmitting, bar length = loudness */
+        if (g_voice_indicator) {
+            char lbl[64];
+            if (!g_voice_on)
+                snprintf(lbl, sizeof(lbl), "MIC: off");
+            else if (!g_settings.voice_ptt)
+                snprintf(lbl, sizeof(lbl), "MIC: open  [%-*.*s]",
+                          g_mic_level / 5, g_mic_level / 5,
+                          "####################");
+            else if (!g_ptt_down)
+                snprintf(lbl, sizeof(lbl), "MIC: push %s",
+                         g_settings.voice_ptt_mouse ? "mouse4"
+                         : "your key");
+            else
+                snprintf(lbl, sizeof(lbl), "MIC: LIVE  [%-*.*s]",
+                          g_mic_level / 5, g_mic_level / 5,
+                          "####################");
+            SetWindowTextA(g_voice_indicator, lbl);
+        }
+        return 0;
+    }
     case WM_INVITEPOPUP: {
         /* sync thread staged a popup (invite or new-DM notice); show it
          * here on the UI thread so relays never stall on a MessageBox.

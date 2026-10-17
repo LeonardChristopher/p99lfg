@@ -68,6 +68,16 @@ int voice_poll(VoiceState *v, const char *my_privkey,
  * Returns 0 on success. */
 int voice_presence_publish(SyncState *s, const char *channel,
                            const char *my_pubkey, int udp_port);
+
+/* Presence with the sender's own address (pubkey:ip:port) - the peer
+ * can send to us immediately, no traffic-learning chicken-and-egg. */
+int voice_presence_publish_ip(SyncState *s, const char *channel,
+                               const char *my_pubkey, int udp_port,
+                               const char *my_ip);
+
+/* Register/refresh a voice peer from a presence event. */
+int voice_peer_register(VoiceState *v, const char *pubkey, const char *host,
+                         int port);
 /* Parse a voice-presence control message. Returns 1 and fills the
  * peer's advertised address on match. */
 int voice_presence_parse(const char *content, char *pubkey_out,

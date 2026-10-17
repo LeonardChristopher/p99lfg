@@ -3,6 +3,7 @@
  * loopback UDP sockets and exchange encrypted frames as if they were
  * two group members on one machine. No audio hardware needed. */
 #include "voice.h"
+#include "voice_audio.h"
 #include "chat.h"
 #include "nostr.h"
 #include <stdio.h>
@@ -137,6 +138,53 @@ int main(void)
     CHECK(voice_presence_parse("{\"msg\":\"hello\"}", pk_out, sizeof(pk_out),
                                host_out, sizeof(host_out), &port_out) == 0,
           "non-voice message ignored");
+
+    /* presence with ip: pubkey:ip:port */
+    CHECK(voice_presence_parse("{\"voice\":\"aabbcc:192.168.1.5:51234\"}",
+                               pk_out, sizeof(pk_out), host_out, sizeof(host_out),
+                               &port_out) == 1 &&
+          strcmp(pk_out, "aabbcc") == 0 &&
+          strcmp(host_out, "192.168.1.5") == 0 && port_out == 51234,
+          "presence with ip parses");
+
+    /* peer registration: upsert by pubkey. a already carries loopback
+     * peers from earlier phases, so find the aabbcc slot explicitly. */
+    {
+        int before = a.npeers;
+        CHECK(voice_peer_register(&a, "aabbcc", "192.168.1.5", 51234) == 0 &&
+              a.npeers == before + 1,
+              "peer registered with address");
+        VoicePeer *pp = NULL;
+        for (int i = 0; i < a.npeers; i++)
+            if (strcmp(a.peers[i].pubkey, "aabbcc") == 0)
+                pp = &a.peers[i];
+        CHECK(pp && strcmp(pp->host, "192.168.1.5") == 0 && pp->port == 51234,
+              "registered peer has the advertised address");
+        CHECK(voice_peer_register(&a, "aabbcc", "192.168.1.9", 51235) == 0 &&
+              a.npeers == before + 1,
+              "re-register upserts, no duplicate slot");
+        pp = NULL;
+        for (int i = 0; i < a.npeers; i++)
+            if (strcmp(a.peers[i].pubkey, "aabbcc") == 0)
+                pp = &a.peers[i];
+        CHECK(pp && strcmp(pp->host, "192.168.1.9") == 0 && pp->port == 51235,
+              "re-registered peer updated in place");
+    }
+
+    /* push-to-talk gating + mic level */
+    CHECK(vptt_gate(0, 0) == 1 && vptt_gate(0, 1) == 1,
+          "open-mic mode always transmits");
+    CHECK(vptt_gate(1, 0) == 0 && vptt_gate(1, 1) == 1,
+          "PTT transmits only while held");
+    {
+        int16_t quiet[320] = {0};
+        int16_t loud[320];
+        for (int i = 0; i < 320; i++)
+            loud[i] = (int16_t)(i % 2 ? 20000 : -20000);
+        CHECK(vptt_level(quiet, 320) == 0, "silence levels to 0");
+        int lvl = vptt_level(loud, 320);
+        CHECK(lvl >= 55 && lvl <= 65, "loud frame levels ~61");
+    }
 
     voice_close(&a);
     voice_close(&b);
