@@ -69,6 +69,7 @@ static int g_voice_on;
 static int g_mic_level;        /* 0-100, posted to UI for the indicator */
 static int g_ptt_down;        /* current push-to-talk key state */
 static HWND g_voice_indicator; /* "MIC: [####  ] hot/off" label */
+static int g_mic_live;          /* 1 while transmitting: red indicator */
 static VoiceCodec g_vcodec;
 
 /* My LAN address for voice presence: whatever the OS picks for an
@@ -1953,6 +1954,24 @@ static void on_group_voice_toggle(HWND dlg)
 }
 static LRESULT CALLBACK group_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
+    if (msg == WM_CTLCOLORSTATIC) {
+        /* mic indicator: red while transmitting, normal otherwise */
+        if ((HWND)lp == g_voice_indicator) {
+            HDC dc = (HDC)wp;
+            SetBkMode(dc, OPAQUE);
+            if (g_mic_live) {
+                SetBkColor(dc, RGB(200, 40, 40));
+                SetTextColor(dc, RGB(255, 255, 255));
+            } else {
+                SetBkColor(dc, RGB(230, 230, 230));
+                SetTextColor(dc, RGB(60, 60, 60));
+            }
+            static HBRUSH live_br, idle_br;
+            if (!live_br) live_br = CreateSolidBrush(RGB(200, 40, 40));
+            if (!idle_br) idle_br = CreateSolidBrush(RGB(230, 230, 230));
+            return (LRESULT)(g_mic_live ? live_br : idle_br);
+        }
+    }
     if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_SEND)
         { on_group_send(dlg); return 0; }
     if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_JOIN)
@@ -2465,24 +2484,36 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_MICUPDATE: {
         /* audio thread posted a new mic level: paint the indicator.
          * off    = capture not running or PTT not held
-         * [####  ] = transmitting, bar length = loudness */
+         * [####  ] = transmitting, bar length = loudness
+         * LIVE turns the label red (see WM_CTLCOLORSTATIC) so a human
+         * can see the mic state from across the room. */
         if (g_voice_indicator) {
             char lbl[64];
-            if (!g_voice_on)
+            int live;
+            if (!g_voice_on) {
                 snprintf(lbl, sizeof(lbl), "MIC: off");
-            else if (!g_settings.voice_ptt)
+                live = 0;
+            } else if (!g_settings.voice_ptt) {
                 snprintf(lbl, sizeof(lbl), "MIC: open  [%-*.*s]",
                           g_mic_level / 5, g_mic_level / 5,
                           "####################");
-            else if (!g_ptt_down)
+                live = 1;
+            } else if (!g_ptt_down) {
                 snprintf(lbl, sizeof(lbl), "MIC: push %s",
                          g_settings.voice_ptt_mouse ? "mouse4"
                          : "your key");
-            else
+                live = 0;
+            } else {
                 snprintf(lbl, sizeof(lbl), "MIC: LIVE  [%-*.*s]",
                           g_mic_level / 5, g_mic_level / 5,
                           "####################");
+                live = 1;
+            }
             SetWindowTextA(g_voice_indicator, lbl);
+            if (live != g_mic_live) {
+                g_mic_live = live;
+                InvalidateRect(g_voice_indicator, NULL, TRUE);
+            }
         }
         return 0;
     }
