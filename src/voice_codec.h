@@ -10,7 +10,7 @@
 #define VCODEC_CHANNELS  1
 #define VCODEC_FRAME_MS 20
 #define VCODEC_SAMPLES  (VCODEC_RATE / 1000 * VCODEC_FRAME_MS) /* 320 */
-#define VCODEC_BITRATE  24000
+#define VCODEC_BITRATE  32000
 #define VCODEC_MAX_BYTES 400 /* plenty for 20ms @ 24kbps */
 
 typedef struct {

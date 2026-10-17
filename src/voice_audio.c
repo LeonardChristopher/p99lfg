@@ -113,9 +113,15 @@ void va_capture_close(void)
     g_win = NULL;
 }
 
-/* playback: three rotating output buffers */
-static WAVEHDR g_ohdrs[3];
-static int g_obuf; /* next to fill */
+/* playback: jitter-cushioned queue. Frames arrive in bursts (network
+ * jitter + thread timing); a thin 3-buffer ring starved the device
+ * and the resulting dropouts are what made speech sound robotic.
+ * We queue up to a ~140ms cushion and let the device drain it
+ * smoothly; overflow discards oldest (never blocks the voice thread). */
+#define VA_PLAY_QUEUE 7 /* 7 x 20ms = 140ms cushion */
+static WAVEHDR g_ohdrs[VA_PLAY_QUEUE];
+static int g_obuf;   /* next slot to submit */
+static int g_oplayed;/* slots currently in the device */
 
 int va_play_open(const char *device_name)
 {
@@ -147,7 +153,8 @@ int va_play_open(const char *device_name)
         return -1;
     g_play_open = 1;
     g_obuf = 0;
-    for (int i = 0; i < 3; i++)
+    g_oplayed = 0;
+    for (int i = 0; i < VA_PLAY_QUEUE; i++)
         memset(&g_ohdrs[i], 0, sizeof(g_ohdrs[i]));
     return 0;
 }
@@ -159,16 +166,23 @@ void va_play_frame(const int16_t *pcm, size_t samples)
     size_t bytes = samples * 2;
     WAVEHDR *h = &g_ohdrs[g_obuf];
     if (h->dwFlags & WHDR_PREPARED) {
-        if (!(h->dwFlags & WHDR_DONE))
-            return; /* device lagging: drop rather than block */
+        if (!(h->dwFlags & WHDR_DONE)) {
+            /* cushion full: drop this frame (better one lost frame
+             * than a stalled audio thread) */
+            return;
+        }
         waveOutUnprepareHeader(g_wout, h, sizeof(WAVEHDR));
+        if (h->lpData) {
+            free(h->lpData);
+            h->lpData = NULL;
+        }
     }
     h->lpData = (LPSTR)malloc(bytes);
     memcpy(h->lpData, pcm, bytes);
     h->dwBufferLength = (DWORD)bytes;
     waveOutPrepareHeader(g_wout, h, sizeof(WAVEHDR));
     waveOutWrite(g_wout, h, sizeof(WAVEHDR));
-    g_obuf = (g_obuf + 1) % 3;
+    g_obuf = (g_obuf + 1) % VA_PLAY_QUEUE;
 }
 
 void va_play_close(void)
@@ -176,7 +190,7 @@ void va_play_close(void)
     if (!g_play_open)
         return;
     waveOutReset(g_wout);
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < VA_PLAY_QUEUE; i++) {
         if (g_ohdrs[i].dwFlags & WHDR_PREPARED) {
             waveOutUnprepareHeader(g_wout, &g_ohdrs[i], sizeof(WAVEHDR));
             free(g_ohdrs[i].lpData);

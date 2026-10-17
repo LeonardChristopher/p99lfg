@@ -2,6 +2,9 @@
 #include <opus.h>
 #include <string.h>
 
+/* codec tuning for natural voice: 32kbps VOIP with in-band FEC and
+ * voice-optimized analysis (24kbps sounded thin/robotic on real mics) */
+
 int vcodec_open(VoiceCodec *c)
 {
     memset(c, 0, sizeof(*c));
@@ -11,6 +14,9 @@ int vcodec_open(VoiceCodec *c)
     if (err != OPUS_OK || !c->enc)
         return -1;
     opus_encoder_ctl(c->enc, OPUS_SET_BITRATE(VCODEC_BITRATE));
+    opus_encoder_ctl(c->enc, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
+    opus_encoder_ctl(c->enc, OPUS_SET_INBAND_FEC(1));
+    opus_encoder_ctl(c->enc, OPUS_SET_COMPLEXITY(8));
     c->dec = opus_decoder_create(VCODEC_RATE, VCODEC_CHANNELS, &err);
     if (err != OPUS_OK || !c->dec) {
         opus_encoder_destroy(c->enc);

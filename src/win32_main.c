@@ -906,6 +906,29 @@ static DWORD WINAPI sync_thread(LPVOID arg)
          * so peers can detect our gaps and we detect theirs. */
         if (g_group_name[0] && round % 6 == 5)
             recon_send_receipt(&g_sync, &g_recon, g_group_name);
+        /* stale-LFG sweep (~once a minute): a user who quit without
+         * toggling LFG off leaves a replaceable event on the relays
+         * that never expires - without this they haunt the list as
+         * [off] forever. 20 minutes with no event/log activity and
+         * the entry is removed. Favourites are kept. */
+        if (round % 12 == 11) {
+            uint64_t now = (uint64_t)time(NULL);
+            for (int i = lfg_count(g_state) - 1; i >= 0; i--) {
+                const LfgEntry *e = lfg_get(g_state, i);
+                if (!e || !e->name[0])
+                    continue;
+                if (g_favs && fav_has(g_favs, e->name))
+                    continue;
+                uint64_t last = 0;
+                for (int p = 0; p < g_npresence; p++)
+                    if (strcmp(g_presence[p].name, e->name) == 0) {
+                        last = g_presence[p].last_seen;
+                        break;
+                    }
+                if (last && now - last > 20 * 60)
+                    lfg_remove(g_state, e->name);
+            }
+        }
         round++;
         for (int i = 0; i < 50 && g_sync_thread_run; i++)
             Sleep(100); /* ~5s between relay polls; voice has its OWN
