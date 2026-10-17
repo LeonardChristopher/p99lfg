@@ -27,7 +27,7 @@ jobs:
         shell: cmd
       - name: Run tests
         run: |
-          gcc -O2 -DSECP256K1_STATIC -Isrc -Ivendor/secp256k1/include -Ivendor/secp256k1/build/include -Ivendor/qrcodegen tests/test_all.c src/voice_codec.c src/sha256.c src/nostr.c src/core.c src/sync.c src/ws_client.c src/ws_winhttp.c src/chat.c src/aes.c src/fav.c src/rating.c src/chars.c src/channels.c src/settings.c src/voice.c src/voice_audio.c vendor/qrcodegen/qrcodegen.c vendor/secp256k1/build/lib/libsecp256k1.a vendor/opus/build/libopus.a -o build/test_all.exe -lws2_32 -lwinhttp -lwinmm
+          gcc -O2 -DSECP256K1_STATIC -Isrc -Ivendor/secp256k1/include -Ivendor/secp256k1/build/include -Ivendor/qrcodegen -Ivendor/opus/include tests/test_all.c src/voice_codec.c src/sha256.c src/nostr.c src/core.c src/sync.c src/ws_client.c src/ws_winhttp.c src/chat.c src/aes.c src/fav.c src/rating.c src/chars.c src/channels.c src/settings.c src/voice.c src/voice_audio.c vendor/qrcodegen/qrcodegen.c vendor/secp256k1/build/lib/libsecp256k1.a vendor/opus/build/libopus.a -o build/test_all.exe -lws2_32 -lwinhttp -lwinmm
           gcc -O2 -DSECP256K1_STATIC -Isrc -Ivendor/secp256k1/include -Ivendor/secp256k1/build/include tests/test_ws.c src/ws_client.c src/ws_winhttp.c src/sha256.c src/nostr.c vendor/secp256k1/build/lib/libsecp256k1.a -o build/test_ws.exe -lws2_32 -lwinhttp
           build\test_all.exe
         shell: cmd
