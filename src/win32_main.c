@@ -9,6 +9,7 @@
 #include "channels.h"
 #include "voice.h"
 #include "voice_audio.h"
+#include "voice_codec.h"
 #include "fav.h"
 #include "rating.h"
 #include "qrcodegen.h"
@@ -68,6 +69,7 @@ static int g_voice_on;
 static int g_mic_level;        /* 0-100, posted to UI for the indicator */
 static int g_ptt_down;        /* current push-to-talk key state */
 static HWND g_voice_indicator; /* "MIC: [####  ] hot/off" label */
+static VoiceCodec g_vcodec;
 
 /* My LAN address for voice presence: whatever the OS picks for an
  * outbound datagram (works even with no DNS/network). */
@@ -1865,12 +1867,17 @@ static void va_capture_cb(const int16_t *pcm, size_t samples, void *ud)
     g_mic_level = transmit ? vptt_level(pcm, samples) : 0;
     if (!transmit)
         return;
+    /* Opus-encode the 20ms frame, then ship the compressed bytes */
+    uint8_t opusbuf[VCODEC_MAX_BYTES];
+    int n = vcodec_encode(&g_vcodec, pcm, (int)samples,
+                          opusbuf, sizeof(opusbuf));
+    if (n <= 0)
+        return;
     uint32_t stamp = (uint32_t)GetTickCount();
     for (int i = 0; i < g_voice.npeers; i++)
         if (g_voice.peers[i].active && g_voice.peers[i].port > 0)
             voice_send_frame(&g_voice, g_voice.peers[i].pubkey,
-                             g_sync.privkey, (const uint8_t *)pcm,
-                             samples * 2, stamp);
+                             g_sync.privkey, opusbuf, (size_t)n, stamp);
 }
 
 /* Decrypted incoming voice frame -> speakers (sync-thread poll). */
@@ -1878,8 +1885,12 @@ static void voice_frame_cb(const char *sender_pubkey, const uint8_t *frame,
                            size_t len, uint32_t stamp_ms, void *ud)
 {
     (void)sender_pubkey; (void)stamp_ms; (void)ud;
-    if (len >= 2)
-        va_play_frame((const int16_t *)frame, len / 2);
+    /* decode opus -> PCM -> speakers */
+    int16_t pcm[VCODEC_SAMPLES * 2];
+    int n = vcodec_decode(&g_vcodec, frame, len, pcm,
+                          sizeof(pcm) / sizeof(pcm[0]));
+    if (n > 0)
+        va_play_frame(pcm, (size_t)n);
 }
 
 static void on_group_voice_toggle(HWND dlg)
@@ -1899,6 +1910,13 @@ static void on_group_voice_toggle(HWND dlg)
             voice_close(&g_voice);
             MessageBoxA(dlg, "Could not open the microphone.\n"
                         "Check Voice options (device selection).",
+                        "p99lfg", MB_ICONINFORMATION);
+            return;
+        }
+        if (vcodec_open(&g_vcodec) != 0) {
+            va_capture_close();
+            voice_close(&g_voice);
+            MessageBoxA(dlg, "Could not start the Opus codec.",
                         "p99lfg", MB_ICONINFORMATION);
             return;
         }
@@ -1924,6 +1942,7 @@ static void on_group_voice_toggle(HWND dlg)
     } else {
         va_capture_close();
         va_play_close();
+        vcodec_close(&g_vcodec);
         voice_close(&g_voice);
         g_voice_on = 0;
         g_mic_level = 0;

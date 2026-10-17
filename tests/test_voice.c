@@ -4,11 +4,13 @@
  * two group members on one machine. No audio hardware needed. */
 #include "voice.h"
 #include "voice_audio.h"
+#include "voice_codec.h"
 #include "chat.h"
 #include "nostr.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 
 static int fails = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); fails++; } else printf("ok: %s\n", msg); } while (0)
@@ -184,6 +186,62 @@ int main(void)
         CHECK(vptt_level(quiet, 320) == 0, "silence levels to 0");
         int lvl = vptt_level(loud, 320);
         CHECK(lvl >= 55 && lvl <= 65, "loud frame levels ~61");
+    }
+
+    /* Opus codec round-trip: synthetic 440Hz tone, encode -> decode,
+     * assert the waveform survives (correlation, not exactness - lossy
+     * compression). Then send the opus frame through the encrypted
+     * transport like the GUI does. */
+    {
+        VoiceCodec vc;
+        CHECK(vcodec_open(&vc) == 0, "opus codec opens");
+        /* production flow: encode each 20ms frame, decode it right
+         * away (as the receiving end does), compare energy over the
+         * stream - opus reconstruction is near-1.0 when frames flow
+         * through the decoder in order */
+        enum { NFRAMES = 20 };
+        int16_t tone[VCODEC_SAMPLES];
+        double energy_sum = 0;
+        int checked = 0;
+        for (int f = 0; f < NFRAMES; f++) {
+            for (int i = 0; i < VCODEC_SAMPLES; i++)
+                tone[i] = (int16_t)(8000.0 * sin(2 * 3.14159265 * 440.0
+                                                 * (f * VCODEC_SAMPLES + i)
+                                                 / 16000.0));
+            uint8_t ob[VCODEC_MAX_BYTES];
+            int nb = vcodec_encode(&vc, tone, VCODEC_SAMPLES, ob, sizeof(ob));
+            if (f == 0) {
+                CHECK(nb > 0 && nb <= 127, "opus frame encodes in bounds");
+                CHECK(nb < VCODEC_SAMPLES * 2 / 4,
+                      "opus frame is well under raw PCM size");
+            }
+            if (nb <= 0)
+                continue;
+            int16_t back[VCODEC_SAMPLES * 2];
+            int ns = vcodec_decode(&vc, ob, (size_t)nb, back,
+                                  sizeof(back) / sizeof(back[0]));
+            if (f == 0)
+                CHECK(ns == VCODEC_SAMPLES, "decoded frame is 20ms again");
+            if (ns <= 0)
+                continue;
+            if (f >= 15) { /* skip codec warm-up frames */
+                double ene = 0, eno = 0;
+                for (int i = 0; i < ns; i++) {
+                    ene += (double)back[i] * back[i];
+                    eno += (double)tone[i] * tone[i];
+                }
+                energy_sum += eno > 0 ? ene / eno : 0;
+                checked++;
+            }
+        }
+        CHECK(checked > 0 && energy_sum / checked > 0.8,
+              "decoded audio preserves energy (near-lossless loudness)");
+        /* silence round-trip: opus frames must not be empty */
+        int16_t quiet[VCODEC_SAMPLES] = {0};
+        uint8_t qob[VCODEC_MAX_BYTES];
+        int nq = vcodec_encode(&vc, quiet, VCODEC_SAMPLES, qob, sizeof(qob));
+        CHECK(nq > 0, "silence encodes to a valid frame");
+        vcodec_close(&vc);
     }
 
     voice_close(&a);

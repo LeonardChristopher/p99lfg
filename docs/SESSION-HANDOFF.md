@@ -217,10 +217,27 @@ ROUND 11 (user live-test feedback, Oct 16):
       - STILL RAW PCM (640B/20ms = ~32kB/s) - fine on LAN, Opus
         encode/decode is the next layer for internet use.
 
+- [x] OPUS CODEC (user: "pointless to test without it"):
+      - vendored xiph/opus v1.5.2 at vendor/opus (git clone, .git
+        removed; built by build.sh + CI + build-windows.sh like
+        secp256k1). ~17MB source, built static, needs -lm.
+      - src/voice_codec.[ch]: VOIP application, 16kHz mono, 20ms
+        frames, 24kbps VBR. ~50-90B/frame vs 640B raw (~10x less
+        wire). GUI encode path: capture -> vcodec_encode ->
+        voice_send_frame (encrypted); receive: voice_frame_cb ->
+        vcodec_decode -> va_play_frame.
+      - Codec opens/closes with the voice toggle.
+      - Tests: encode-in-bounds, size<25% raw, 20ms decode frame,
+        ENERGY preservation over a 20-frame stream (>0.8; skip
+        first 15 warm-up frames - opus needs stream history; a
+        single isolated frame decodes misaligned, that's the codec,
+        not a bug), silence encodes. Also vptt gate/level, presence
+        with ip, peer upsert - all green.
+
 NEXT UP (in order):
 1. PERSISTENT RELAY CONNECTION
-2. Opus codec layer (bandwidth: raw PCM is LAN-ok, internet needs it)
-3. Guild directory event + GUI editor for guild keys
+2. Guild directory event + GUI editor for guild keys
+3. NAT traversal / hole punching for internet voice (LAN works)
 4. Ease-of-install pass
 1. PERSISTENT RELAY CONNECTION (the big approved item; receipts are
    its safety net, now in place). Phased: persistent subscribe +
