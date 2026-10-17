@@ -60,6 +60,13 @@ static char g_inipath[LFG_PATH_MAX];
 static HWND g_group_log, g_group_input, g_group_channel, g_group_roster;
 static HWND g_group_wnd;
 static char g_conn_text[128]; /* staged by the sync thread */
+/* hidden users (Clear list): relay events re-add everything every
+ * poll, so clearing without a blocklist can't stick. Persisted in
+ * p99lfg.hidden. */
+#define HIDDEN_MAX 512
+static char g_hidden[HIDDEN_MAX][64];
+static int g_nhidden;
+static char g_hiddenpath[LFG_PATH_MAX];
 static char g_group_name[CHANNEL_NAME_MAX];
 static char g_group_log_text[8192];
 static GroupMember g_group_members[GROUP_MEMBERS_MAX];
@@ -423,6 +430,8 @@ static const char *DEFAULT_RELAYS[] = {
 
 static void upsert_remote(const SyncRemoteEntry *e)
 {
+    if (user_hidden(e->name))
+        return; /* cleared by the user; relay re-adds must not stick */
     if (e->lfg)
         lfg_add_manual(g_state, e->name, e->zone, e->detail);
     else
@@ -1054,11 +1063,16 @@ static void populate_list(void)
         }
     }
 
+    /* preserve the scroll: a poll rebuild used to snap the list to
+     * the top every ~5s, making anyone below the fold un-right-clickable */
+    LRESULT top_idx = SendMessageA(g_list, LB_GETTOPINDEX, 0, 0);
     SendMessageA(g_list, LB_RESETCONTENT, 0, 0);
     if (g_favs && fav_count(g_favs) > 0) {
         SendMessageA(g_list, LB_ADDSTRING, 0, (LPARAM)"--- Favourites ---");
         for (int i = 0; i < fav_count(g_favs); i++) {
             const char *name = fav_get(g_favs, i);
+            if (user_hidden(name))
+                continue;
             const LfgEntry *e = NULL;
             for (int j = 0; j < lfg_count(g_state); j++) {
                 const LfgEntry *c = lfg_get(g_state, j);
@@ -1083,6 +1097,8 @@ static void populate_list(void)
     for (int i = 0; i < lfg_count(g_state); i++) {
         const LfgEntry *e = lfg_get(g_state, i);
         if (g_favs && fav_has(g_favs, e->name))
+            continue;
+        if (user_hidden(e->name))
             continue;
         char row[256];
         snprintf(row, sizeof(row), "%s%s  [%s]  %s%s%s",
@@ -1109,7 +1125,16 @@ static void populate_list(void)
     }
     if (reselect != LB_ERR)
         SendMessageA(g_list, LB_SETCURSEL, (WPARAM)reselect, 0);
+    /* restore scroll (clamped if the list shrank) */
+    {
+        LRESULT cnt = SendMessageA(g_list, LB_GETCOUNT, 0, 0);
+        if (top_idx > cnt - 1)
+            top_idx = cnt - 1;
+        if (top_idx > 0)
+            SendMessageA(g_list, LB_SETTOPINDEX, (WPARAM)top_idx, 0);
+    }
 }
+
 
 static HWND g_status;
 
@@ -1323,14 +1348,14 @@ static void create_controls(HWND hwnd, HFONT hf)
     CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "", WS_CHILD | WS_VISIBLE | ES_NUMBER,
                  646, 243, 40, 20, hwnd, (HMENU)ID_CHAR_LEVEL, NULL, NULL);
     CreateWindowA("BUTTON", "Add", WS_CHILD | WS_VISIBLE,
-                 690, 242, 60, 22, hwnd, (HMENU)ID_BTN_CHAR_ADD, NULL, NULL);
+                 690, 242, 76, 28, hwnd, (HMENU)ID_BTN_CHAR_ADD, NULL, NULL);
     CreateWindowA("BUTTON", "Toggle LFG", WS_CHILD | WS_VISIBLE,
-                 610, 270, 68, 22, hwnd, (HMENU)ID_BTN_CHAR_LFG, NULL, NULL);
+                 610, 270, 76, 30, hwnd, (HMENU)ID_BTN_CHAR_LFG, NULL, NULL);
     CreateWindowA("BUTTON", "Delete", WS_CHILD | WS_VISIBLE,
-                 682, 270, 68, 22, hwnd, (HMENU)ID_BTN_CHAR_DEL, NULL, NULL);
+                 690, 270, 76, 30, hwnd, (HMENU)ID_BTN_CHAR_DEL, NULL, NULL);
     g_lfg_limit_combo = CreateWindowA("COMBOBOX", "",
         WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
-        754, 270, 100, 200, hwnd, (HMENU)ID_LFG_LIMIT, NULL, NULL);
+        770, 272, 115, 200, hwnd, (HMENU)ID_LFG_LIMIT, NULL, NULL);
     {
         static const char *limits[] = {"LFG: no limit", "LFG: 30 min",
                                        "LFG: 1 hour", "LFG: 2 hours",
@@ -1361,23 +1386,23 @@ static void create_controls(HWND hwnd, HFONT hf)
     CreateWindowA("BUTTON", "Remove",
                   WS_CHILD | WS_VISIBLE, 625, 440, 75, 24, hwnd, (HMENU)ID_BTN_REMOVE, NULL, NULL);
     CreateWindowA("BUTTON", "Fav",
-                  WS_CHILD | WS_VISIBLE, 10, 470, 45, 22, hwnd, (HMENU)ID_BTN_FAV, NULL, NULL);
+                  WS_CHILD | WS_VISIBLE, 10, 470, 52, 30, hwnd, (HMENU)ID_BTN_FAV, NULL, NULL);
     CreateWindowA("BUTTON", "Rate",
-                  WS_CHILD | WS_VISIBLE, 60, 470, 45, 22, hwnd, (HMENU)ID_BTN_RATE, NULL, NULL);
+                  WS_CHILD | WS_VISIBLE, 66, 470, 52, 30, hwnd, (HMENU)ID_BTN_RATE, NULL, NULL);
     CreateWindowA("BUTTON", "Chat",
-                  WS_CHILD | WS_VISIBLE, 110, 470, 45, 22, hwnd, (HMENU)ID_BTN_CHAT, NULL, NULL);
+                  WS_CHILD | WS_VISIBLE, 122, 470, 55, 30, hwnd, (HMENU)ID_BTN_CHAT, NULL, NULL);
     CreateWindowA("BUTTON", "Group",
-                  WS_CHILD | WS_VISIBLE, 160, 470, 55, 22, hwnd, (HMENU)ID_GROUP_TAB, NULL, NULL);
+                  WS_CHILD | WS_VISIBLE, 181, 470, 62, 30, hwnd, (HMENU)ID_GROUP_TAB, NULL, NULL);
     CreateWindowA("BUTTON", "Show key QR",
-                  WS_CHILD | WS_VISIBLE, 220, 470, 90, 22, hwnd, (HMENU)ID_BTN_QR, NULL, NULL);
+                  WS_CHILD | WS_VISIBLE, 247, 470, 100, 30, hwnd, (HMENU)ID_BTN_QR, NULL, NULL);
     CreateWindowA("BUTTON", "Set name",
-                  WS_CHILD | WS_VISIBLE, 315, 470, 75, 22, hwnd, (HMENU)ID_BTN_SETNAME, NULL, NULL);
+                  WS_CHILD | WS_VISIBLE, 351, 470, 85, 30, hwnd, (HMENU)ID_BTN_SETNAME, NULL, NULL);
     CreateWindowA("BUTTON", "Clear list",
-                  WS_CHILD | WS_VISIBLE, 395, 470, 75, 22, hwnd, (HMENU)ID_BTN_CLEAR, NULL, NULL);
+                  WS_CHILD | WS_VISIBLE, 440, 470, 85, 30, hwnd, (HMENU)ID_BTN_CLEAR, NULL, NULL);
     CreateWindowA("BUTTON", "History",
-                  WS_CHILD | WS_VISIBLE, 475, 470, 70, 22, hwnd, (HMENU)ID_BTN_HISTORY, NULL, NULL);
+                  WS_CHILD | WS_VISIBLE, 529, 470, 80, 30, hwnd, (HMENU)ID_BTN_HISTORY, NULL, NULL);
     CreateWindowA("BUTTON", "Dark mode",
-                  WS_CHILD | WS_VISIBLE, 550, 470, 75, 22, hwnd, (HMENU)ID_BTN_DARK, NULL, NULL);
+                  WS_CHILD | WS_VISIBLE, 613, 470, 85, 30, hwnd, (HMENU)ID_BTN_DARK, NULL, NULL);
     g_st_dir = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE,
                              10, 500, 690, 20, hwnd, (HMENU)ID_ST_DIR, NULL, NULL);
 
@@ -2332,6 +2357,25 @@ static void on_group_voice_toggle(HWND dlg)
 }
 static LRESULT CALLBACK group_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
+    if (msg == WM_SIZE) {
+        /* resizable: the chat log stretches with the window; the
+         * control column (roster/buttons) stays fixed-width on the
+         * right, growing taller with the client area */
+        int cw = LOWORD(lp), ch = HIWORD(lp);
+        if (g_group_log && cw > 440 && ch > 120) {
+            SetWindowPos(g_group_log, NULL, 10, 40,
+                         400 + (cw - 640), 260 + (ch - 500), SWP_NOZORDER);
+            SetWindowPos(g_group_input, NULL, 10, 310 + (ch - 500),
+                         320 + (cw - 640), 24, SWP_NOZORDER);
+            SetWindowPos(GetDlgItem(dlg, ID_GROUP_SEND), NULL,
+                         335 + (cw - 640), 308 + (ch - 500), 75, 26,
+                         SWP_NOZORDER);
+            SetWindowPos(g_group_roster, NULL, 420, 40,
+                         cw - 430, 220 + (ch - 500), SWP_NOZORDER);
+            InvalidateRect(dlg, NULL, TRUE);
+        }
+        return 0;
+    }
     if (msg == WM_CTLCOLORSTATIC) {
         /* mic indicator: red while transmitting, normal otherwise */
         if ((HWND)lp == g_voice_indicator) {
@@ -2633,6 +2677,15 @@ static void on_clear_list(void)
      * (names/keys/last-seen), then persist the purge */
     g_npresence = 0;
     known_save();
+    /* block relay re-adds: every name currently listed (manual,
+     * log-derived, remote) goes on the hidden list so the next poll
+     * cannot resurrect them. Persisted. */
+    for (int i = 0; i < lfg_count(g_state); i++) {
+        const LfgEntry *e = lfg_get(g_state, i);
+        if (e->name[0] && !user_hidden(e->name) && g_nhidden < HIDDEN_MAX)
+            snprintf(g_hidden[g_nhidden++], 64, "%s", e->name);
+    }
+    hidden_save();
     /* also purge log-derived entries by clearing the in-memory list */
     for (int i = lfg_count(g_state) - 1; i >= 0; i--) {
         const LfgEntry *e = lfg_get(g_state, i);
@@ -2674,6 +2727,46 @@ static void known_save(void)
                                             good - old keypairs from
                                             throwaway identities don't
                                             haunt the list forever */
+
+static void hidden_load(void)
+{
+    if (!g_hiddenpath[0])
+        return;
+    FILE *f = fopen(g_hiddenpath, "r");
+    if (!f)
+        return;
+    char line[80];
+    while (fgets(line, sizeof(line), f) && g_nhidden < HIDDEN_MAX) {
+        char *nl = strpbrk(line, "\r\n");
+        if (nl)
+            *nl = '\0';
+        if (line[0])
+            snprintf(g_hidden[g_nhidden++], 64, "%s", line);
+    }
+    fclose(f);
+}
+
+static void hidden_save(void)
+{
+    if (!g_hiddenpath[0])
+        return;
+    FILE *f = fopen(g_hiddenpath, "w");
+    if (!f)
+        return;
+    for (int i = 0; i < g_nhidden; i++)
+        fprintf(f, "%s\n", g_hidden[i]);
+    fclose(f);
+}
+
+static int user_hidden(const char *name)
+{
+    if (!name || !name[0])
+        return 0;
+    for (int i = 0; i < g_nhidden; i++)
+        if (strcmp(g_hidden[i], name) == 0)
+            return 1;
+    return 0;
+}
 
 static void known_load(void)
 {
@@ -3269,6 +3362,15 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
             strcpy(ksl + 1, "p99lfg.known");
         snprintf(g_knownpath, sizeof(g_knownpath), "%s", knownpath);
     }
+    {
+        char hiddenpath[LFG_PATH_MAX];
+        GetModuleFileNameA(NULL, hiddenpath, sizeof(hiddenpath));
+        char *hsl = strrchr(hiddenpath, '\\');
+        if (hsl)
+            strcpy(hsl + 1, "p99lfg.hidden");
+        snprintf(g_hiddenpath, sizeof(g_hiddenpath), "%s", hiddenpath);
+    }
+    hidden_load();
     {
         extern void known_load(void);
         known_load();
