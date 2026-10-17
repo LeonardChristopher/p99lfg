@@ -336,6 +336,7 @@ static const char *presence_mark(const char *name)
 #define ID_GROUP_VOICE 265
 #define ID_GROUP_VOICEOPT 266
 #define ID_GROUP_NODE 268
+#define ID_GROUP_VTEST 269
 #define ID_VO_MIC 270
 #define ID_VO_OUTPUT 271
 #define ID_VO_PTT 272
@@ -1751,6 +1752,152 @@ static void on_group_leave(HWND dlg)
     group_roster_refresh();
 }
 
+/* ---- Voice test window: loopback + diagnostics ----
+ * The loopback registers YOURSELF as a voice peer on 127.0.0.1, so
+ * your own transmission runs through the REAL pipeline: mic -> Opus
+ * -> ECDH encrypt -> UDP socket -> crypto-attribution -> decode ->
+ * speakers. If you hear yourself, every layer works and any silence
+ * is network-side; if you don't, the counter panel shows which layer
+ * stopped. PTT must be held (or off) for the test to transmit. */
+#define ID_VT_LOOP 280
+#define ID_VT_CLOSE 281
+
+static HWND g_vt_wnd, g_vt_label;
+static int g_vt_looping; /* 1 while loopback test transmits */
+static int g_vt_rx_start, g_vt_tx_start;
+
+static void vt_refresh_label(void)
+{
+    if (!g_vt_label)
+        return;
+    char lbl[1400];
+    int off = 0;
+    off += snprintf(lbl + off, sizeof(lbl) - off,
+        "voice: %s   mic: %d/100\r\n",
+        g_voice_on ? "ON" : "off", g_mic_level);
+    off += snprintf(lbl + off, sizeof(lbl) - off,
+        "TX frames sent:      %d\r\n", g_voice_tx_frames - g_vt_tx_start);
+    off += snprintf(lbl + off, sizeof(lbl) - off,
+        "RX frames received: %d\r\n", g_voice_rx_frames - g_vt_rx_start);
+    off += snprintf(lbl + off, sizeof(lbl) - off,
+        "loopback test: %s\r\n",
+        g_vt_looping ? "RUNNING (talk; you should hear yourself)" : "stopped");
+    if (g_voice_on) {
+        EnterCriticalSection(&g_voice_lock);
+        off += snprintf(lbl + off, sizeof(lbl) - off,
+                        "peers: %d\r\n", g_voice.npeers);
+        for (int i = 0; i < g_voice.npeers && off < (int)sizeof(lbl) - 160; i++)
+            off += snprintf(lbl + off, sizeof(lbl) - off,
+                            "  %.10s @ %s:%d\r\n",
+                            g_voice.peers[i].pubkey,
+                            g_voice.peers[i].host[0] ? g_voice.peers[i].host : "?",
+                            g_voice.peers[i].port);
+        LeaveCriticalSection(&g_voice_lock);
+    } else {
+        off += snprintf(lbl + off, sizeof(lbl) - off, "peers: (voice is off)\r\n");
+    }
+    SetWindowTextA(g_vt_label, lbl);
+}
+
+static LRESULT CALLBACK vt_wnd_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == WM_TIMER) {
+        vt_refresh_label();
+        /* while looping: keep transmitting if PTT held/open-mic */
+        if (g_vt_looping && g_voice_on && g_mic_transmit) {
+            /* frames already flow via the normal capture callback to
+             * all peers incl. the loopback self-peer; nothing extra */
+        }
+        return 0;
+    }
+    if (msg == WM_COMMAND && LOWORD(wp) == ID_VT_LOOP) {
+        if (!g_vt_looping) {
+            if (!g_voice_on) {
+                MessageBoxA(w, "Toggle Voice on first (Voice button in the "
+                            "group window).", "p99lfg voice test",
+                            MB_ICONINFORMATION);
+                return 0;
+            }
+            EnterCriticalSection(&g_voice_lock);
+            /* register SELF at loopback so our own frames come back
+             * through the genuine UDP+crypto path */
+            voice_peer_register(&g_voice, g_sync.pubkey, "127.0.0.1",
+                                g_voice.port);
+            LeaveCriticalSection(&g_voice_lock);
+            g_vt_looping = 1;
+            g_vt_rx_start = g_voice_rx_frames;
+            g_vt_tx_start = g_voice_tx_frames;
+        } else {
+            /* stop: drop the loopback peer (the real peers stay) */
+            EnterCriticalSection(&g_voice_lock);
+            for (int i = 0; i < g_voice.npeers; i++) {
+                if (strcmp(g_voice.peers[i].pubkey, g_sync.pubkey) == 0 &&
+                    strcmp(g_voice.peers[i].host, "127.0.0.1") == 0) {
+                    for (int j = i; j < g_voice.npeers - 1; j++)
+                        g_voice.peers[j] = g_voice.peers[j + 1];
+                    g_voice.npeers--;
+                    break;
+                }
+            }
+            LeaveCriticalSection(&g_voice_lock);
+            g_vt_looping = 0;
+        }
+        vt_refresh_label();
+        return 0;
+    }
+    if (msg == WM_COMMAND && LOWORD(wp) == ID_VT_CLOSE) {
+        KillTimer(w, 1);
+        DestroyWindow(w);
+        g_vt_wnd = NULL;
+        g_vt_label = NULL;
+        g_vt_looping = 0;
+        return 0;
+    }
+    if (msg == WM_DESTROY) {
+        KillTimer(w, 1);
+        g_vt_looping = 0;
+    }
+    return DefWindowProcA(w, msg, wp, lp);
+}
+
+static void on_voice_test(void)
+{
+    if (g_vt_wnd) {
+        SetFocus(g_vt_wnd);
+        return;
+    }
+    WNDCLASSA wc = {0};
+    wc.lpfnWndProc = vt_wnd_proc;
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = "p99lfg_voicetest";
+    RegisterClassA(&wc);
+    RECT pr;
+    GetWindowRect(g_hwnd, &pr);
+    HWND w = CreateWindowExA(WS_EX_DLGMODALFRAME, "p99lfg_voicetest",
+                            "Voice test",
+                            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+                            pr.left + 140, pr.top + 100, 420, 330,
+                            g_hwnd, NULL, NULL, NULL);
+    g_vt_label = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
+        WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | WS_VSCROLL,
+        10, 10, 390, 210, w, NULL, NULL, NULL);
+    CreateWindowA("BUTTON", "Start loopback test", WS_CHILD | WS_VISIBLE,
+                  10, 230, 140, 26, w, (HMENU)ID_VT_LOOP, NULL, NULL);
+    CreateWindowA("BUTTON", "Close", WS_CHILD | WS_VISIBLE,
+                  160, 230, 70, 26, w, (HMENU)ID_VT_CLOSE, NULL, NULL);
+    HFONT hf = (HFONT)SendMessageA(g_hwnd, WM_GETFONT, 0, 0);
+    HWND c = GetWindow(w, GW_CHILD);
+    while (c) {
+        SendMessageA(c, WM_SETFONT, (WPARAM)hf, TRUE);
+        c = GetWindow(c, GW_HWNDNEXT);
+    }
+    g_vt_wnd = w;
+    SetTimer(w, 1, 250, NULL);
+    vt_refresh_label();
+    ShowWindow(w, SW_SHOW);
+}
+
 /* Host a relay node for the group: embedded Nostr relay on this
  * machine. Members connect with ws://<your-ip>:<port>/ via the Join
  * box (paste it as the channel after the channel name? no - the
@@ -1825,6 +1972,10 @@ static LRESULT CALLBACK vo_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             SetFocus(dlg);
             return 0;
         }
+        if (id == ID_GROUP_VTEST) {
+            on_voice_test();
+            return 0;
+        }
         if (id == ID_VO_OK || id == ID_VO_CANCEL) {
             if (id == ID_VO_OK) {
                 char mic[160] = "", outp[160] = "";
@@ -1877,6 +2028,8 @@ static void on_voice_options(HWND parent)
                              10, 78, 110, 22, dlg, (HMENU)ID_VO_PTT, NULL, NULL);
     g_vo_keybtn = CreateWindowA("BUTTON", "", WS_CHILD | WS_VISIBLE,
                                 130, 76, 120, 24, dlg, (HMENU)ID_VO_KEY, NULL, NULL);
+    CreateWindowA("BUTTON", "Test...", WS_CHILD | WS_VISIBLE,
+                  5, 130, 70, 24, dlg, (HMENU)ID_GROUP_VTEST, NULL, NULL);
     CreateWindowA("BUTTON", "OK", WS_CHILD | WS_VISIBLE,
                   80, 130, 70, 24, dlg, (HMENU)ID_VO_OK, NULL, NULL);
     CreateWindowA("BUTTON", "Cancel", WS_CHILD | WS_VISIBLE,
@@ -1956,6 +2109,7 @@ static void va_capture_cb(const int16_t *pcm, size_t samples, void *ud)
                           opusbuf, sizeof(opusbuf));
     if (n <= 0)
         return;
+    g_voice_tx_frames++;
     uint32_t stamp = (uint32_t)GetTickCount();
     EnterCriticalSection(&g_voice_lock);
     for (int i = 0; i < g_voice.npeers; i++)
@@ -1967,6 +2121,7 @@ static void va_capture_cb(const int16_t *pcm, size_t samples, void *ud)
 
 /* Decrypted incoming voice frame -> speakers (sync-thread poll). */
 static volatile int g_voice_rx_frames; /* received voice frames (diagnostic) */
+static volatile int g_voice_tx_frames; /* frames sent (diagnostic) */
 
 static void voice_frame_cb(const char *sender_pubkey, const uint8_t *frame,
                            size_t len, uint32_t stamp_ms, void *ud)
