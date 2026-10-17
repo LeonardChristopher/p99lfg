@@ -302,6 +302,7 @@ static const char *presence_mark(const char *name)
 #define ID_VO_CANCEL 275
 #define ID_ROSTER_INV_ALLOW 263
 #define ID_ROSTER_INV_DISALLOW 264
+#define ID_ROSTER_PROMOTE 267
 #define ID_BTN_CLEAR 250
 #define ID_BTN_HISTORY 251
 
@@ -559,6 +560,19 @@ static void group_roster_refresh(void)
                                   snap_w[i].name);
     }
     SetWindowTextA(g_group_roster, text);
+    /* live title: member count + undelivered-sends indicator so a
+     * relay outage is visible instead of silent */
+    if (g_group_wnd) {
+        char title[128];
+        int pending = sync_outbox_pending(&g_sync);
+        if (pending > 0)
+            snprintf(title, sizeof(title), "Group: %s (%d/6) - %d sending",
+                     g_group_name, snap_nm, pending);
+        else
+            snprintf(title, sizeof(title), "Group: %s (%d/6)",
+                     g_group_name, snap_nm);
+        SetWindowTextA(g_group_wnd, title);
+    }
 }
 
 static void on_generic(int kind, const char *pubkey, const char *dtag,
@@ -804,8 +818,17 @@ static DWORD WINAPI sync_thread(LPVOID arg)
 {
     (void)arg;
     int round = 0;
+    int last_pending = -1;
     while (g_sync_thread_run) {
         sync_poll(&g_sync);
+        {
+            /* title shows pending-sends count; repaint when it changes */
+            int pending = sync_outbox_pending(&g_sync);
+            if (pending != last_pending && g_group_wnd && g_hwnd) {
+                last_pending = pending;
+                PostMessageA(g_hwnd, WM_GROUPREFRESH, 0, 0);
+            }
+        }
         if (g_log && g_debug && (round % 12 == 0)) {
             log_printf("sync poll round %d: ", round);
             for (int i = 0; i < g_sync.nrelays; i++)
@@ -1825,12 +1848,14 @@ static LRESULT CALLBACK group_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
     if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_LEAVE)
         { on_group_leave(dlg); return 0; }
     if (msg == WM_CONTEXTMENU && (HWND)wp == g_group_roster) {
-        /* leader right-clicks a member in the roster: toggle invite rights */
+        /* leader right-clicks the roster: toggle invite rights on a
+         * member, or promote someone from the waitlist */
         POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
         POINT client_pt = pt;
         ScreenToClient(g_group_roster, &client_pt);
         int idx = -1;
-        if (g_group_is_leader && g_group_nmembers > 0) {
+        int widx = -1;
+        if (g_group_is_leader && (g_group_nmembers > 0 || g_group_nwait > 0)) {
             int line = HIWORD(SendMessageA(g_group_roster, EM_CHARFROMPOS, 0,
                                            (LPARAM)&client_pt));
             char buf[128] = {0};
@@ -1850,7 +1875,38 @@ static LRESULT CALLBACK group_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
                         idx = i;
                         break;
                     }
+                for (int i = 0; i < g_group_nwait; i++)
+                    if (strcmp(g_group_wait[i].name, nm) == 0) {
+                        widx = i;
+                        break;
+                    }
             }
+        }
+        if (widx >= 0 && g_group_nmembers < GROUP_MEMBERS_MAX) {
+            /* waitlisted player: promote to member */
+            HMENU menu = CreatePopupMenu();
+            char label[96];
+            snprintf(label, sizeof(label), "Promote %s to member",
+                     g_group_wait[widx].name);
+            AppendMenuA(menu, MF_STRING, ID_ROSTER_PROMOTE, label);
+            int cmd = (int)TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD,
+                                          pt.x, pt.y, 0, dlg, NULL);
+            DestroyMenu(menu);
+            if (cmd == ID_ROSTER_PROMOTE) {
+                g_group_members[g_group_nmembers++] = g_group_wait[widx];
+                for (int i = widx; i < g_group_nwait - 1; i++)
+                    g_group_wait[i] = g_group_wait[i + 1];
+                g_group_nwait--;
+                group_state_publish(&g_sync, g_group_name, g_group_members,
+                                    g_group_nmembers, g_group_wait, g_group_nwait);
+                char note[160];
+                snprintf(note, sizeof(note), "--- %s promoted from waitlist ---\r\n",
+                         g_group_members[g_group_nmembers - 1].name);
+                group_log_append(note);
+                group_roster_refresh();
+                group_refresh();
+            }
+            return 0;
         }
         if (idx >= 0) {
             HMENU menu = CreatePopupMenu();
@@ -1935,7 +1991,7 @@ static void on_group_window(void)
                  420, 40, 200, 220, dlg, (HMENU)ID_GROUP_ROSTER, NULL, NULL);
     CreateWindowA("BUTTON", "Create group", WS_CHILD | WS_VISIBLE,
                  420, 270, 95, 26, dlg, (HMENU)ID_GROUP_CREATE, NULL, NULL);
-    CreateWindowA("BUTTON", "Voice", WS_CHILD | WS_VISIBLE,
+    CreateWindowA("BUTTON", "Voice (setup)", WS_CHILD | WS_VISIBLE,
                  420, 300, 95, 26, dlg, (HMENU)ID_GROUP_VOICE, NULL, NULL);
     CreateWindowA("BUTTON", "Voice options", WS_CHILD | WS_VISIBLE,
                  420, 330, 95, 26, dlg, (HMENU)ID_GROUP_VOICEOPT, NULL, NULL);

@@ -180,6 +180,14 @@ ROUND 11 (user live-test feedback, Oct 16):
       (WinMM WaveIn) will read these when it lands. build-windows.sh
       was stale (missing ws_winhttp.c) - synced with the CI line.
 
+- [x] EASY WINS round (user-sanctioned): (1) leader can PROMOTE a
+      waitlisted player via roster right-click (auto-promote on leave
+      still exists; manual UI was the known gap); (2) group window
+      title now shows "Group: <name> (n/6)" plus "- N sending" while
+      outbox events await a relay (outbox visibility was a known gap);
+      (3) Voice button relabeled "Voice (setup)" until the codec
+      layer lands - it only does transport/presence.
+
 NEXT UP (in order):
 1. PERSISTENT RELAY CONNECTION (the big approved item; receipts are
    its safety net, now in place). Phased: persistent subscribe +
