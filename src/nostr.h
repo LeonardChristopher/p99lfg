@@ -50,4 +50,8 @@ size_t nostr_event_message(const NostrEvent *ev, char *out, size_t outsz);
 /* Build a REQ filter message for the p99lfg tag. */
 size_t nostr_req_message(const char *subid, char *out, size_t outsz);
 
+/* REQ with a since watermark (persistent-connection resume). */
+size_t nostr_req_message_since(const char *subid, char *out, size_t outsz,
+                               uint64_t since);
+
 #endif

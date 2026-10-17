@@ -7,6 +7,7 @@
 #include "chars.h"
 #include "settings.h"
 #include "channels.h"
+#include "sync_persist.h"
 #include "voice.h"
 #include "voice_audio.h"
 #include "voice_codec.h"
@@ -2679,7 +2680,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         break;
     case WM_DESTROY:
-        g_voice_thread_run = 0;
+        sync_persist_stop();
+    g_voice_thread_run = 0;
     g_sync_thread_run = 0;
         if (g_sync_thread)
             WaitForSingleObject(g_sync_thread, 6000);
@@ -2918,6 +2920,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     g_sync_thread = CreateThread(NULL, 0, sync_thread, NULL, 0, NULL);
     if (!g_sync_thread)
         log_printf("sync thread FAILED to start (err=%lu)\n", (unsigned long)GetLastError());
+    sync_persist_start(&g_sync);
     g_voice_thread_run = 1;
     HANDLE vt = CreateThread(NULL, 0, voice_thread, NULL, 0, NULL);
     if (!vt)

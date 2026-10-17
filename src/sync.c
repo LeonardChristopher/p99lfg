@@ -296,6 +296,19 @@ int sync_handle_message(SyncState *s, const char *msg)
                 && s->on_generic) {
                 char content[2200], pubkey[80], dtag[140], evid[NOSTR_EVENT_ID_HEX];
                 uint64_t created = 0;
+                {
+                    char nums[24] = {0};
+                    const char *cp2 = strstr(evobj, "\"created_at\":");
+                    if (cp2) {
+                        cp2 += 14;
+                        size_t ni = 0;
+                        while (*cp2 >= '0' && *cp2 <= '9' && ni < sizeof(nums) - 1)
+                            nums[ni++] = *cp2++;
+                        created = strtoull(nums, NULL, 10);
+                        if (created > s->last_created_at)
+                            s->last_created_at = created;
+                    }
+                }
                 evid[0] = '\0';
                 (void)json_get_string(evobj, "id", evid, sizeof(evid));
                 if (json_get_string(evobj, "content", content, sizeof(content)) >= 0 &&
@@ -440,7 +453,7 @@ void sync_poll(SyncState *s)
                        m, got_events);
                 break;
             }
-            int r = sync_handle_message(s, buf);
+            int r = sync_handle_message_ex(s, buf);
             if (r == 1)
                 got_events++;
         }
@@ -448,4 +461,51 @@ void sync_poll(SyncState *s)
             ws_dbg_public("sync: drained relay with ZERO events parsed");
         ws_close(&c);
     }
+}
+
+uint64_t sync_last_created_at(SyncState *s)
+{
+    return s->last_created_at;
+}
+
+void sync_note_created_at(SyncState *s, uint64_t created_at)
+{
+    if (created_at > s->last_created_at)
+        s->last_created_at = created_at;
+}
+
+
+/* ---- delivery mutex: shared by the safety-net poll and the
+ * persistent streams (sync_persist.c) so sync_handle_message is
+ * never re-entered. Single-threaded tests use it too - a plain
+ * init-once lock with no platform threading dependency. ---- */
+#ifdef _WIN32
+#include <windows.h>
+static CRITICAL_SECTION g_deliver_mu;
+static int g_deliver_mu_init;
+void sync_deliver_lock(void)
+{
+    if (!g_deliver_mu_init) {
+        InitializeCriticalSection(&g_deliver_mu);
+        g_deliver_mu_init = 1;
+    }
+    EnterCriticalSection(&g_deliver_mu);
+}
+void sync_deliver_unlock(void)
+{
+    LeaveCriticalSection(&g_deliver_mu);
+}
+#else
+#include <pthread.h>
+static pthread_mutex_t g_deliver_mu = PTHREAD_MUTEX_INITIALIZER;
+void sync_deliver_lock(void)   { pthread_mutex_lock(&g_deliver_mu); }
+void sync_deliver_unlock(void) { pthread_mutex_unlock(&g_deliver_mu); }
+#endif
+
+int sync_handle_message_ex(SyncState *s, const char *msg)
+{
+    sync_deliver_lock();
+    int r = sync_handle_message(s, msg);
+    sync_deliver_unlock();
+    return r;
 }

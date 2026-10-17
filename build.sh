@@ -29,7 +29,7 @@ FLAGS="$FLAGS -Ivendor/opus/include"
 
 $CC $FLAGS tests/test_all.c src/sha256.c src/nostr.c src/core.c src/sync.c src/ws_client.c src/chat.c src/aes.c src/fav.c src/rating.c src/chars.c src/channels.c src/settings.c vendor/qrcodegen/qrcodegen.c $LIBS -lm -o build/test_all
 $CC $FLAGS tests/test_ws.c src/ws_client.c src/sha256.c src/nostr.c $LIBS -lm -o build/test_ws
-$CC $FLAGS tests/test_group_flow.c src/sha256.c src/nostr.c src/core.c src/sync.c src/ws_client.c src/chat.c src/aes.c src/channels.c $LIBS -lm -o build/test_group_flow -lpthread
+$CC $FLAGS tests/test_group_flow.c src/sha256.c src/nostr.c src/core.c src/sync.c src/sync_persist.c src/ws_client.c src/chat.c src/aes.c src/channels.c $LIBS -lm -o build/test_group_flow -lpthread
 $CC $FLAGS tests/test_voice.c src/voice.c src/voice_audio.c src/voice_codec.c src/sha256.c src/nostr.c src/core.c src/sync.c src/ws_client.c src/chat.c src/aes.c src/channels.c $LIBS -lm -o build/test_voice
 $CC $FLAGS tests/cli_main.c src/core.c src/sha256.c src/nostr.c $LIBS -lm -o build/cli
 

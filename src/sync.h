@@ -70,6 +70,9 @@ typedef struct {
     char outbox[SYNC_OUTBOX_MAX][SYNC_OUTBOX_MSG];
     int outbox_n;
     int outbox_next;
+    /* watermark: newest event created_at seen (poll or persistent
+     * stream); reconnect REQs use since=last_created_at - 1 */
+    uint64_t last_created_at;
 } SyncState;
 
 void sync_init(SyncState *s, const char *keyfile_path, const char *server,
@@ -95,6 +98,12 @@ int sync_publish_char(SyncState *s, const char *name, const char *cls,
  * drain any arrived events into on_event. Call periodically (e.g. 5s). */
 void sync_poll(SyncState *s);
 
+void sync_deliver_lock(void);
+void sync_deliver_unlock(void);
+
+/* Thread-safe sync_handle_message (takes the delivery lock). */
+int sync_handle_message_ex(SyncState *s, const char *msg);
+
 /* Parse a relay message ("[\"EVENT\",sub,{...}]" or "[\"OK\",...]"). Returns 1
  * if an EVENT was parsed and cb fired, 0 if not, -1 on malformed input. */
 int sync_handle_message(SyncState *s, const char *msg);
@@ -114,3 +123,16 @@ int sync_outbox_pending(SyncState *s);
 #define sync_set_generic_callback(s, cb, ud) do { (s)->on_generic = (cb); (s)->generic_userdata = (ud); } while (0)
 
 #endif
+
+/* ---- Persistent relay connections (real-time EVENT streaming) ----
+ * One background connection per relay: REQ with a `since` watermark,
+ * then keep the socket open and process EVENTs as the relay pushes
+ * them. Reconnects with exponential backoff on drop. The periodic
+ * sync_poll remains as a safety net (outbox flush + receipt sweep +
+ * slow full rescan), but chat latency drops from ~5s to ~instant. */
+#define SYNC_PERSIST_ENABLED(s) 1
+
+/* Watermark bookkeeping shared by poll + persistent streams: record
+ * the newest created_at seen so reconnect REQs can use since=. */
+uint64_t sync_last_created_at(SyncState *s);
+void sync_note_created_at(SyncState *s, uint64_t created_at);

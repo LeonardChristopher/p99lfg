@@ -254,3 +254,15 @@ size_t nostr_req_message(const char *subid, char *out, size_t outsz)
         "[\"REQ\",\"%s\",{\"kinds\":[%d,4,9,30079,30080,30081,30082],\"#t\":[\"" LFG_TAG "\"]}]",
         subid, NOSTR_KIND_LFG);
 }
+
+size_t nostr_req_message_since(const char *subid, char *out, size_t outsz,
+                               uint64_t since)
+{
+    /* Same subscription with a `since` watermark: a reconnected client
+     * only receives events newer than its last seen timestamp, instead
+     * of re-downloading the whole stored feed. */
+    return (size_t)snprintf(out, outsz,
+        "[\"REQ\",\"%s\",{\"kinds\":[%d,4,9,30079,30080,30081,30082],"
+        "\"#t\":[\"" LFG_TAG "\"],\"since\":%llu}]",
+        subid, NOSTR_KIND_LFG, (unsigned long long)since);
+}
