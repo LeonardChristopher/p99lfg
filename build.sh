@@ -37,4 +37,6 @@ $CC $FLAGS tests/cli_main.c src/core.c src/sha256.c src/nostr.c $LIBS -lm -o bui
 ./build/test_ws
 ./build/test_group_flow
 ./build/test_voice
+$CC $FLAGS tests/test_relay_node.c src/relay_node.c src/ws_client.c src/sha256.c src/nostr.c src/core.c src/sync.c src/chat.c src/aes.c $LIBS -lm -o build/test_relay_node -lpthread
+./build/test_relay_node
 ./build/cli tests/fixtures

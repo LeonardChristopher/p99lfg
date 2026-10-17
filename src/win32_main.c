@@ -8,6 +8,7 @@
 #include "settings.h"
 #include "channels.h"
 #include "sync_persist.h"
+#include "relay_node.h"
 #include "voice.h"
 #include "voice_audio.h"
 #include "voice_codec.h"
@@ -71,6 +72,7 @@ static int g_mic_level;        /* 0-100, posted to UI for the indicator */
 static int g_mic_transmit;     /* 1 while frames are being sent */
 static int g_ptt_down;        /* current push-to-talk key state */
 static int g_voice_thread_run;
+static int g_node_on;
 static HWND g_voice_indicator; /* "MIC: [####  ] hot/off" label */
 static int g_mic_live;          /* 1 while transmitting: red indicator */
 static VoiceCodec g_vcodec;
@@ -332,6 +334,7 @@ static const char *presence_mark(const char *name)
 #define ID_GROUP_CREATE 262
 #define ID_GROUP_VOICE 265
 #define ID_GROUP_VOICEOPT 266
+#define ID_GROUP_NODE 268
 #define ID_VO_MIC 270
 #define ID_VO_OUTPUT 271
 #define ID_VO_PTT 272
@@ -1721,6 +1724,36 @@ static void on_group_leave(HWND dlg)
     group_roster_refresh();
 }
 
+/* Host a relay node for the group: embedded Nostr relay on this
+ * machine. Members connect with ws://<your-ip>:<port>/ via the Join
+ * box (paste it as the channel after the channel name? no - the
+ * relay list). The address is shown in the group log so the host can
+ * tell the group; the firewall prompt on first start is expected. */
+static void on_group_node_toggle(HWND dlg)
+{
+    if (!g_node_on) {
+        if (relay_node_start(0) != 0) {
+            MessageBoxA(dlg, "Could not bind a port for the relay node.",
+                        "p99lfg", MB_ICONINFORMATION);
+            return;
+        }
+        g_node_on = 1;
+        char myip[64];
+        voice_local_ip(myip, sizeof(myip));
+        char note[220];
+        snprintf(note, sizeof(note),
+                 "--- hosting relay node: ws://%s:%d/ ---\r\n"
+                 "(group members: use this as an extra relay)\r\n",
+                 myip[0] ? myip : "127.0.0.1", relay_node_port());
+        group_log_append(note);
+    } else {
+        relay_node_stop();
+        g_node_on = 0;
+        group_log_append("--- relay node off ---\r\n");
+    }
+    group_refresh();
+}
+
 /* ---- Voice options dialog: mic/headset selection + push-to-talk ----
  * Device lists come from WinMM (waveIn/waveOut enumeration). PTT key
  * is captured live: click "Set key", press any key, it sticks. */
@@ -2004,6 +2037,8 @@ static LRESULT CALLBACK group_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         { on_group_create(dlg); return 0; }
     if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_VOICEOPT)
         { on_voice_options(dlg); return 0; }
+    if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_NODE)
+        { on_group_node_toggle(dlg); return 0; }
     if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_VOICE)
         { on_group_voice_toggle(dlg); return 0; }
     if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_LEAVE)
@@ -2126,7 +2161,7 @@ static void on_group_window(void)
     HWND dlg = CreateWindowExA(0, "p99lfg_group",
                                g_group_name[0] ? "Group chat" : "Group chat (join a channel)",
                                WS_OVERLAPPEDWINDOW,
-                               pr.left + 100, pr.top + 80, 640, 460,
+                               pr.left + 100, pr.top + 80, 640, 500,
                                g_hwnd, NULL, NULL, NULL);
     CreateWindowA("STATIC", "Channel:", WS_CHILD | WS_VISIBLE,
                  10, 12, 50, 18, dlg, NULL, NULL, NULL);
@@ -2156,8 +2191,10 @@ static void on_group_window(void)
                  420, 300, 95, 26, dlg, (HMENU)ID_GROUP_VOICE, NULL, NULL);
     CreateWindowA("BUTTON", "Voice options", WS_CHILD | WS_VISIBLE,
                  420, 330, 95, 26, dlg, (HMENU)ID_GROUP_VOICEOPT, NULL, NULL);
+    CreateWindowA("BUTTON", "Host node", WS_CHILD | WS_VISIBLE,
+                 420, 390, 95, 26, dlg, (HMENU)ID_GROUP_NODE, NULL, NULL);
     g_voice_indicator = CreateWindowA("STATIC", "MIC: off", WS_CHILD | WS_VISIBLE,
-                                      420, 362, 200, 18, dlg, NULL, NULL, NULL);
+                                      10, 362, 400, 18, dlg, NULL, NULL, NULL);
     CreateWindowA("BUTTON", "Leave", WS_CHILD | WS_VISIBLE,
                  525, 270, 95, 26, dlg, (HMENU)ID_GROUP_LEAVE, NULL, NULL);
     HFONT hf = (HFONT)SendMessageA(g_hwnd, WM_GETFONT, 0, 0);
@@ -2681,6 +2718,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         break;
     case WM_DESTROY:
         sync_persist_stop();
+    if (g_node_on)
+        relay_node_stop();
     g_voice_thread_run = 0;
     g_sync_thread_run = 0;
         if (g_sync_thread)

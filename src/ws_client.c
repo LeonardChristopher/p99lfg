@@ -67,7 +67,7 @@ __attribute__((weak)) void (*tls_close_hook)(TlsCtx *) = NULL;
 #include <unistd.h>
 #endif
 
-static void sha1(const unsigned char *d, size_t len, unsigned char out[20]);
+void ws_sha1(const unsigned char *d, size_t len, unsigned char out[20]);
 
 static void base64(const unsigned char *in, int len, char *out)
 {
@@ -398,7 +398,7 @@ void ws_close(WsConn *c)
 }
 
 /* ---- SHA-1 (RFC 3174), used for the WebSocket accept header ---- */
-static void sha1(const unsigned char *d, size_t len, unsigned char out[20])
+void ws_sha1(const unsigned char *d, size_t len, unsigned char out[20])
 {
     uint32_t h[5] = {0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0};
     unsigned char msg[128];

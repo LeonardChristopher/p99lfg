@@ -44,6 +44,10 @@ int ws_recv_text(WsConn *c, char *out, size_t outsz);
 
 void ws_close(WsConn *c);
 
+/* SHA-1 (WebSocket handshake accept-key computation) - shared with the
+ * embedded relay node. */
+void ws_sha1(const unsigned char *d, size_t len, unsigned char out[20]);
+
 #endif
 
 /* Optional diagnostics sink (set by the app; NULL = silent). */
