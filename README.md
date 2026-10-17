@@ -6,7 +6,9 @@ Pure C, native Win32, single static exe — no runtime dependencies, a few MB
 of RAM, built for the old hardware P99 players love. Everything syncs over
 **Nostr relays**: no central server to run or pay for, and the same network
 the mobile companion ([LFG-iOS](https://github.com/LeonardChristopher/LFG-iOS))
-uses.
+uses. Mobile developers: see [docs/MOBILE-PORT-GUIDE.md](docs/MOBILE-PORT-GUIDE.md)
+for the full wire protocol, platform library recommendations, and the
+Windows app's hard-won bug lessons.
 
 ## Features
 

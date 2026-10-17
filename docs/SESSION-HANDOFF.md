@@ -593,6 +593,14 @@ thread loop when g_voice_on.
       add persistent subscribe + reconnect/backoff; then retire poll)
 - [ ] Ease-of-install pass (deferred until groups verified by harness)
 
+## 7b. Mobile port
+
+docs/MOBILE-PORT-GUIDE.md is the mobile companion's on-ramp: full wire
+protocol table, the 10 bug lessons from live testing, platform library
+shortcuts (rust-nostr bindings, CryptoKit/OkHttp, Oboe/AVAudioEngine),
+NIP-44 migration guidance, and a recommended port order (read-only ->
+DMs -> groups -> voice last).
+
 ## 8. Next after this feature
 
 See ROADMAP doc: raids (multi-group), voice indication, mobile parity.
