@@ -142,6 +142,8 @@ static void group_unlock(void)
 }
 static void voice_frame_cb(const char *sender_pubkey, const uint8_t *frame,
                            size_t len, uint32_t stamp_ms, void *ud);
+static void hidden_save(void);
+static int user_hidden(const char *name);
 static void group_log_append(const char *text)
 {
     group_lock();
