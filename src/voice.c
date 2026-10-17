@@ -286,18 +286,44 @@ int voice_poll(VoiceState *v, const char *my_privkey,
         for (int i = 0; i < v->npeers; i++)
             if (strcmp(v->peers[i].host, ip) == 0 && v->peers[i].port == port)
                 match = &v->peers[i];
-        if (!match)
-            continue;
-        if (seq <= match->last_seq && match->last_seq - seq < 1000000)
-            continue; /* dupe/replay within window */
-        match->last_seq = seq;
         uint8_t key[32];
-        if (derive_shared_key(my_privkey, match->pubkey, key) != 0)
-            continue;
         uint8_t frame[VOICE_FRAME_MAX];
-        int fl = decrypt_frame(key, pkt + 16, blen, frame, sizeof(frame));
-        if (fl <= 0)
-            continue; /* wrong key: not really this peer */
+        int fl = -1;
+        if (match) {
+            /* fast path: address matches the advertised presence */
+            if (seq <= match->last_seq && match->last_seq - seq < 1000000)
+                continue; /* dupe/replay within window */
+            if (derive_shared_key(my_privkey, match->pubkey, key) == 0)
+                fl = decrypt_frame(key, pkt + 16, blen, frame, sizeof(frame));
+        } else {
+            /* no address match: attribute by CRYPTO instead. The sender's
+             * advertised IP can differ from the datagram source (multi-NIC,
+             * VPN, virtual adapters) - address matching silently dropped
+             * every frame there ("mic works but no audio out"). Only the
+             * true peer's frames decrypt under the pairwise secret. */
+            for (int i = 0; i < v->npeers && fl <= 0; i++) {
+                if (seq <= v->peers[i].last_seq &&
+                    v->peers[i].last_seq - seq < 1000000)
+                    continue;
+                if (derive_shared_key(my_privkey, v->peers[i].pubkey, key) != 0)
+                    continue;
+                fl = decrypt_frame(key, pkt + 16, blen, frame, sizeof(frame));
+                if (fl > 0) {
+                    match = &v->peers[i];
+                    match->last_seq = seq;
+                    /* learn/refresh the real source address for the
+                     * fast path and for sending back */
+                    snprintf(match->host, sizeof(match->host), "%s", ip);
+                    match->port = port;
+                }
+            }
+        }
+        if (!match || fl <= 0)
+            continue;
+        if (match) {
+            if (match->last_seq < seq)
+                match->last_seq = seq;
+        }
         cb(match->pubkey, frame, (size_t)fl, stamp, ud);
         delivered++;
     }

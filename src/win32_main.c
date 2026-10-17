@@ -74,6 +74,7 @@ static int g_ptt_down;        /* current push-to-talk key state */
 static int g_voice_thread_run;
 static int g_node_on;
 static HWND g_voice_indicator; /* "MIC: [####  ] hot/off" label */
+static HWND g_voice_rxlabel;   /* "RX: n frames from peers" diagnostic */
 static int g_mic_live;          /* 1 while transmitting: red indicator */
 static VoiceCodec g_vcodec;
 
@@ -1939,10 +1940,13 @@ static void va_capture_cb(const int16_t *pcm, size_t samples, void *ud)
 }
 
 /* Decrypted incoming voice frame -> speakers (sync-thread poll). */
+static volatile int g_voice_rx_frames; /* received voice frames (diagnostic) */
+
 static void voice_frame_cb(const char *sender_pubkey, const uint8_t *frame,
                            size_t len, uint32_t stamp_ms, void *ud)
 {
     (void)sender_pubkey; (void)stamp_ms; (void)ud;
+    g_voice_rx_frames++;
     /* decode opus -> PCM -> speakers */
     int16_t pcm[VCODEC_SAMPLES * 2];
     int n = vcodec_decode(&g_vcodec, frame, len, pcm,
@@ -2194,7 +2198,9 @@ static void on_group_window(void)
     CreateWindowA("BUTTON", "Host node", WS_CHILD | WS_VISIBLE,
                  420, 390, 95, 26, dlg, (HMENU)ID_GROUP_NODE, NULL, NULL);
     g_voice_indicator = CreateWindowA("STATIC", "MIC: off", WS_CHILD | WS_VISIBLE,
-                                      10, 362, 400, 18, dlg, NULL, NULL, NULL);
+                                      10, 362, 300, 18, dlg, NULL, NULL, NULL);
+    g_voice_rxlabel = CreateWindowA("STATIC", "RX: 0", WS_CHILD | WS_VISIBLE,
+                                    10, 382, 300, 18, dlg, NULL, NULL, NULL);
     CreateWindowA("BUTTON", "Leave", WS_CHILD | WS_VISIBLE,
                  525, 270, 95, 26, dlg, (HMENU)ID_GROUP_LEAVE, NULL, NULL);
     HFONT hf = (HFONT)SendMessageA(g_hwnd, WM_GETFONT, 0, 0);
@@ -2573,6 +2579,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 live = 1;
             }
             SetWindowTextA(g_voice_indicator, lbl);
+            if (g_voice_rxlabel) {
+                char rx[64];
+                snprintf(rx, sizeof(rx), "RX: %d frames", g_voice_rx_frames);
+                SetWindowTextA(g_voice_rxlabel, rx);
+            }
             if (live != g_mic_live) {
                 g_mic_live = live;
                 InvalidateRect(g_voice_indicator, NULL, TRUE);
