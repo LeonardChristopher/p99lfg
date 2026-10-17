@@ -2348,11 +2348,16 @@ static BOOL list_pick_row(POINT pt)
     return TRUE;
 }
 
+static void known_save(void);
 static void on_clear_list(void)
 {
     /* wipe non-favourite entries (manual + log-scan + expired remotes);
      * remote players come back on their next event */
     lfg_remove_manual_all(g_state);
+    /* user asked for the old keypairs gone: purge the known cache too
+     * (names/keys/last-seen), then persist the purge */
+    g_npresence = 0;
+    known_save();
     /* also purge log-derived entries by clearing the in-memory list */
     for (int i = lfg_count(g_state) - 1; i >= 0; i--) {
         const LfgEntry *e = lfg_get(g_state, i);
@@ -2389,6 +2394,12 @@ static void known_save(void)
     fclose(f);
 }
 
+#define KNOWN_STALE_SECS (7 * 24 * 3600) /* a week without any event
+                                            and the entry is gone for
+                                            good - old keypairs from
+                                            throwaway identities don't
+                                            haunt the list forever */
+
 static void known_load(void)
 {
     if (!g_knownpath[0])
@@ -2396,6 +2407,7 @@ static void known_load(void)
     FILE *f = fopen(g_knownpath, "r");
     if (!f)
         return;
+    uint64_t now = (uint64_t)time(NULL);
     char line[600];
     while (fgets(line, sizeof(line), f) && g_npresence < PRESENCE_MAX) {
         char *nl = strpbrk(line, "\r\n");
@@ -2407,6 +2419,10 @@ static void known_load(void)
                    p->name, p->pubkey,
                    (unsigned long long *)&p->last_seen,
                    p->cls, lvl, p->user) >= 3) {
+            /* prune: entries not seen in the stale window are dropped
+             * here AND the save below persists the prune */
+            if (p->last_seen && now - p->last_seen > KNOWN_STALE_SECS)
+                continue;
             p->level = atoi(lvl);
             g_npresence++;
         }
