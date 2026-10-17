@@ -67,7 +67,9 @@ static int g_group_is_leader;
 static ReconState g_recon;
 static int g_voice_on;
 static int g_mic_level;        /* 0-100, posted to UI for the indicator */
+static int g_mic_transmit;     /* 1 while frames are being sent */
 static int g_ptt_down;        /* current push-to-talk key state */
+static int g_voice_thread_run;
 static HWND g_voice_indicator; /* "MIC: [####  ] hot/off" label */
 static int g_mic_live;          /* 1 while transmitting: red indicator */
 static VoiceCodec g_vcodec;
@@ -103,6 +105,8 @@ static VoiceState g_voice;
  * lost when sent right after someone else"). Every mutation goes
  * through group_log_append / takes g_group_lock. */
 static CRITICAL_SECTION g_group_lock;
+static CRITICAL_SECTION g_voice_lock; /* peers array: audio thread sends,
+                                       sync thread registers */
 static int g_group_lock_init;
 static void group_lock(void)
 {
@@ -697,8 +701,10 @@ static void on_generic(int kind, const char *pubkey, const char *dtag,
                     for (int i = 0; i < g_voice.npeers; i++)
                         if (strcmp(g_voice.peers[i].pubkey, vpk) == 0)
                             was_new = 0;
+                    EnterCriticalSection(&g_voice_lock);
                     voice_peer_register(&g_voice, vpk,
                                         vhost[0] ? vhost : NULL, vport);
+                    LeaveCriticalSection(&g_voice_lock);
                     if (was_new) {
                         char note[160];
                         snprintf(note, sizeof(note),
@@ -890,26 +896,36 @@ static DWORD WINAPI sync_thread(LPVOID arg)
         if (g_group_name[0] && round % 6 == 5)
             recon_send_receipt(&g_sync, &g_recon, g_group_name);
         round++;
-        /* ~5s between relay polls, but voice needs ~20ms service:
-         * poll PTT + incoming audio every 30ms inside the wait. */
-        for (int i = 0; i < 166 && g_sync_thread_run; i++) {
-            if (g_voice_on) {
-                voice_poll(&g_voice, g_sync.privkey, voice_frame_cb, NULL);
-                if (g_settings.voice_ptt) {
-                    if (g_settings.voice_ptt_mouse)
-                        g_ptt_down = (GetKeyState(VK_XBUTTON1) & 0x8000) != 0;
-                    else if (g_settings.voice_ptt_key)
-                        g_ptt_down = (GetAsyncKeyState(g_settings.voice_ptt_key)
-                                      & 0x8000) != 0;
-                    else
-                        g_ptt_down = 0;
-                }
-                /* repaint the indicator at ~15fps: level while held,
-                 * "push your key" prompt while not */
-                PostMessageA(g_hwnd, WM_MICUPDATE, 0, 0);
+        for (int i = 0; i < 50 && g_sync_thread_run; i++)
+            Sleep(100); /* ~5s between relay polls; voice has its OWN
+                           thread now - sharing this loop starved audio
+                           (sync_poll blocks seconds per round) */
+    }
+    return 0;
+}
+
+/* Dedicated voice thread: 20ms cadence, independent of relay polls.
+ * Pumps PTT key state, drains incoming encrypted frames to speakers,
+ * and repaints the mic indicator. */
+static DWORD WINAPI voice_thread(LPVOID arg)
+{
+    (void)arg;
+    while (g_voice_thread_run) {
+        if (g_voice_on) {
+            voice_poll(&g_voice, g_sync.privkey, voice_frame_cb, NULL);
+            if (g_settings.voice_ptt) {
+                if (g_settings.voice_ptt_mouse)
+                    g_ptt_down = (GetKeyState(VK_XBUTTON1) & 0x8000) != 0;
+                else if (g_settings.voice_ptt_key)
+                    g_ptt_down = (GetAsyncKeyState(g_settings.voice_ptt_key)
+                                  & 0x8000) != 0;
+                else
+                    g_ptt_down = 0;
             }
-            Sleep(30);
+            if (g_hwnd)
+                PostMessageA(g_hwnd, WM_MICUPDATE, 0, 0);
         }
+        Sleep(20);
     }
     return 0;
 }
@@ -1864,8 +1880,13 @@ static void on_voice_options(HWND parent)
 static void va_capture_cb(const int16_t *pcm, size_t samples, void *ud)
 {
     (void)ud;
+    /* level meter ALWAYS reflects the mic (a working mic must be
+     * visible even while push-to-talk is not held); transmission is
+     * gated separately below */
+    int level = vptt_level(pcm, samples);
+    g_mic_level = level;
     int transmit = vptt_gate(g_settings.voice_ptt, g_ptt_down);
-    g_mic_level = transmit ? vptt_level(pcm, samples) : 0;
+    g_mic_transmit = transmit;
     if (!transmit)
         return;
     /* Opus-encode the 20ms frame, then ship the compressed bytes */
@@ -1875,10 +1896,12 @@ static void va_capture_cb(const int16_t *pcm, size_t samples, void *ud)
     if (n <= 0)
         return;
     uint32_t stamp = (uint32_t)GetTickCount();
+    EnterCriticalSection(&g_voice_lock);
     for (int i = 0; i < g_voice.npeers; i++)
         if (g_voice.peers[i].active && g_voice.peers[i].port > 0)
             voice_send_frame(&g_voice, g_voice.peers[i].pubkey,
                              g_sync.privkey, opusbuf, (size_t)n, stamp);
+    LeaveCriticalSection(&g_voice_lock);
 }
 
 /* Decrypted incoming voice frame -> speakers (sync-thread poll). */
@@ -2499,9 +2522,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                           "####################");
                 live = 1;
             } else if (!g_ptt_down) {
-                snprintf(lbl, sizeof(lbl), "MIC: push %s",
-                         g_settings.voice_ptt_mouse ? "mouse4"
-                         : "your key");
+                /* level bar STILL shows mic activity: a working mic is
+                 * visible even before you push the key */
+                snprintf(lbl, sizeof(lbl), "MIC: push  [%-*.*s]",
+                          g_mic_level / 5, g_mic_level / 5,
+                          "####################");
                 live = 0;
             } else {
                 snprintf(lbl, sizeof(lbl), "MIC: LIVE  [%-*.*s]",
@@ -2654,7 +2679,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         break;
     case WM_DESTROY:
-        g_sync_thread_run = 0;
+        g_voice_thread_run = 0;
+    g_sync_thread_run = 0;
         if (g_sync_thread)
             WaitForSingleObject(g_sync_thread, 6000);
         {
@@ -2767,6 +2793,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     }
     InitCommonControls();
     g_state = lfg_new();
+    InitializeCriticalSection(&g_voice_lock);
     voice_init(&g_voice); /* sock must start at -1: 0 is a VALID socket
                             handle on Windows and left the voice toggle
                             thinking it was already open without binding
@@ -2891,6 +2918,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     g_sync_thread = CreateThread(NULL, 0, sync_thread, NULL, 0, NULL);
     if (!g_sync_thread)
         log_printf("sync thread FAILED to start (err=%lu)\n", (unsigned long)GetLastError());
+    g_voice_thread_run = 1;
+    HANDLE vt = CreateThread(NULL, 0, voice_thread, NULL, 0, NULL);
+    if (!vt)
+        log_printf("voice thread FAILED to start (err=%lu)\n", (unsigned long)GetLastError());
 
     MSG msg;
     while (GetMessageA(&msg, NULL, 0, 0)) {
