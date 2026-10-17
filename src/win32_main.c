@@ -75,6 +75,8 @@ static volatile int g_voice_tx_frames; /* frames sent (diagnostic) */
 static int g_ptt_down;        /* current push-to-talk key state */
 static int g_voice_thread_run;
 static int g_node_on;
+static uint64_t g_lfg_deadline; /* 0 = none; epoch secs when LFG ends */
+static HWND g_lfg_limit_combo;
 static HWND g_voice_indicator; /* "MIC: [####  ] hot/off" label */
 static HWND g_voice_rxlabel;   /* "RX: n frames from peers" diagnostic */
 static int g_mic_live;          /* 1 while transmitting: red indicator */
@@ -339,6 +341,7 @@ static const char *presence_mark(const char *name)
 #define ID_GROUP_VOICEOPT 266
 #define ID_GROUP_NODE 268
 #define ID_GROUP_VTEST 269
+#define ID_LFG_LIMIT 270
 #define ID_VO_MIC 270
 #define ID_VO_OUTPUT 271
 #define ID_VO_PTT 272
@@ -906,6 +909,22 @@ static DWORD WINAPI sync_thread(LPVOID arg)
          * so peers can detect our gaps and we detect theirs. */
         if (g_group_name[0] && round % 6 == 5)
             recon_send_receipt(&g_sync, &g_recon, g_group_name);
+        /* LFG time limit: the user asked for how long they want to
+         * be LFG; when the deadline passes, all LFG chars toggle off
+         * and publish lfg:false so nobody sees a ghost entry. */
+        if (g_lfg_deadline && g_chars && (uint64_t)time(NULL) >= g_lfg_deadline) {
+            g_lfg_deadline = 0;
+            for (int i = 0; i < g_chars->count; i++) {
+                if (g_chars->chars[i].lfg) {
+                    g_chars->chars[i].lfg = 0;
+                    sync_publish_char(&g_sync, g_chars->chars[i].name,
+                                      g_chars->chars[i].cls,
+                                      g_chars->chars[i].level, "", 0);
+                }
+            }
+            PostMessageA(g_hwnd, WM_REMOTE, 0, 0);
+            ws_log_public("lfg: time limit reached - toggled off");
+        }
         /* stale-LFG sweep (~once a minute): a user who quit without
          * toggling LFG off leaves a replaceable event on the relays
          * that never expires - without this they haunt the list as
@@ -1183,6 +1202,35 @@ static void on_char_add(void)
     populate_chars();
 }
 
+static int any_lfg_on(void)
+{
+    if (!g_chars)
+        return 0;
+    for (int i = 0; i < g_chars->count; i++)
+        if (g_chars->chars[i].lfg)
+            return 1;
+    return 0;
+}
+
+static void on_lfg_limit_change(void)
+{
+    LRESULT sel = SendMessageA(g_lfg_limit_combo, CB_GETCURSEL, 0, 0);
+    if (sel == CB_ERR)
+        return;
+    static const int mins[] = {0, 30, 60, 120, 240};
+    g_settings.lfg_limit_minutes = mins[sel];
+    settings_save(&g_settings, g_inipath);
+    /* apply to a running session: if LFG is on and a limit was just
+     * chosen, start the clock now; "no limit" cancels it */
+    if (any_lfg_on()) {
+        if (g_settings.lfg_limit_minutes > 0)
+            g_lfg_deadline = (uint64_t)time(NULL) +
+                             (uint64_t)g_settings.lfg_limit_minutes * 60;
+        else
+            g_lfg_deadline = 0;
+    }
+}
+
 static void on_char_lfg_toggle(void)
 {
     LRESULT sel = SendMessageA(g_char_list, LB_GETCURSEL, 0, 0);
@@ -1193,6 +1241,13 @@ static void on_char_lfg_toggle(void)
     populate_chars();
     /* publish this character's new state */
     sync_publish_char(&g_sync, c->name, c->cls, c->level, "", c->lfg);
+    /* time limit: turning LFG on starts the clock (selection in the
+     * combo); turning it off cancels any pending deadline */
+    if (c->lfg && g_settings.lfg_limit_minutes > 0)
+        g_lfg_deadline = (uint64_t)time(NULL) +
+                         (uint64_t)g_settings.lfg_limit_minutes * 60;
+    else if (!c->lfg && !any_lfg_on())
+        g_lfg_deadline = 0;
 }
 
 static void on_char_del(void)
@@ -1247,6 +1302,20 @@ static void create_controls(HWND hwnd, HFONT hf)
                  610, 270, 68, 22, hwnd, (HMENU)ID_BTN_CHAR_LFG, NULL, NULL);
     CreateWindowA("BUTTON", "Delete", WS_CHILD | WS_VISIBLE,
                  682, 270, 68, 22, hwnd, (HMENU)ID_BTN_CHAR_DEL, NULL, NULL);
+    g_lfg_limit_combo = CreateWindowA("COMBOBOX", "",
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
+        754, 270, 100, 200, hwnd, (HMENU)ID_LFG_LIMIT, NULL, NULL);
+    {
+        static const char *limits[] = {"LFG: no limit", "LFG: 30 min",
+                                       "LFG: 1 hour", "LFG: 2 hours",
+                                       "LFG: 4 hours"};
+        for (int i = 0; i < 5; i++)
+            SendMessageA(g_lfg_limit_combo, CB_ADDSTRING, 0, (LPARAM)limits[i]);
+        int sel = 0, lm = g_settings.lfg_limit_minutes;
+        if (lm == 30) sel = 1; else if (lm == 60) sel = 2;
+        else if (lm == 120) sel = 3; else if (lm == 240) sel = 4;
+        SendMessageA(g_lfg_limit_combo, CB_SETCURSEL, sel, 0);
+    }
     CreateWindowA("BUTTON", "Refresh",
                   WS_CHILD | WS_VISIBLE, 10, 440, 70, 24, hwnd, (HMENU)ID_BTN_REFRESH, NULL, NULL);
     CreateWindowA("BUTTON", "Change log folder...",
@@ -2960,6 +3029,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case ID_BTN_CHAR_ADD: on_char_add(); return 0;
         case ID_BTN_CHAR_DEL: on_char_del(); return 0;
         case ID_BTN_CHAR_LFG: on_char_lfg_toggle(); return 0;
+        case ID_LFG_LIMIT:
+            if (HIWORD(wp) == CBN_SELCHANGE)
+                on_lfg_limit_change();
+            return 0;
         }
         break;
     case WM_DESTROY:

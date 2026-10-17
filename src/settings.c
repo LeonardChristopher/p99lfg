@@ -38,6 +38,8 @@ void settings_load(Settings *s, const char *path)
             s->voice_ptt_mouse = atoi(line + 16) == 1;
         else if (strncmp(line, "voice_ptt_button=", 17) == 0)
             s->voice_ptt_button = atoi(line + 17);
+        else if (strncmp(line, "lfg_limit_minutes=", 18) == 0)
+            s->lfg_limit_minutes = atoi(line + 18);
         else if (strncmp(line, "guild_channel=", 14) == 0 &&
                  s->nguild_channels < GUILD_CHANNELS_MAX) {
             snprintf(s->guild_channels[s->nguild_channels],
@@ -62,6 +64,7 @@ int settings_save(const Settings *s, const char *path)
     fprintf(f, "voice_ptt_key=%d\n", s->voice_ptt_key);
     fprintf(f, "voice_ptt_mouse=%d\n", s->voice_ptt_mouse ? 1 : 0);
     fprintf(f, "voice_ptt_button=%d\n", s->voice_ptt_button);
+    fprintf(f, "lfg_limit_minutes=%d\n", s->lfg_limit_minutes);
     for (int i = 0; i < s->nguild_channels; i++)
         fprintf(f, "guild_channel=%s\n", s->guild_channels[i]);
     fclose(f);

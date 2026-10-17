@@ -282,6 +282,10 @@ static void test_guild_settings(void)
     CHECK(r.voice_ptt == 1 && r.voice_ptt_key == 112 &&
           r.voice_ptt_mouse == 0,
           "push-to-talk config round-trips");
+    w.lfg_limit_minutes = 60;
+    CHECK(settings_save(&w, gpath) == 0, "lfg limit saved");
+    settings_load(&r, gpath);
+    CHECK(r.lfg_limit_minutes == 60, "lfg limit round-trips");
     remove(gpath);
 }
 

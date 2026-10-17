@@ -26,6 +26,9 @@ typedef struct {
     int voice_ptt_key;        /* virtual-key code, e.g. VK_F1..VK_F12 */
     int voice_ptt_mouse;      /* 1 = a mouse button is the PTT trigger */
     int voice_ptt_button;    /* xbutton id if voice_ptt_mouse */
+    /* LFG time limit: minutes a character stays LFG before the app
+     * auto-toggles it off (and publishes lfg:false). 0 = no limit. */
+    int lfg_limit_minutes;
 } Settings;
 /* Load from path (missing file = defaults, no error). */
 void settings_load(Settings *s, const char *path);
