@@ -234,6 +234,30 @@ ROUND 11 (user live-test feedback, Oct 16):
         not a bug), silence encodes. Also vptt gate/level, presence
         with ip, peer upsert - all green.
 
+ROUND 13 (review + UX, while user away ~40min):
+- [x] Code-review fixes: (1) waitlist invite Accept registered self
+      as a FULL MEMBER locally (role was ignored) - now role-aware,
+      waitlisted self goes to g_group_wait, message confirms
+      "waitlist - full chat access"; (2) connectivity strip built
+      with the same cross-thread UI bug the roster had - caught
+      in-review, posts WM_CONNUPDATE like the roster fix.
+- [x] 6+2 group semantics per user: roster shows "Group (n/6 + m
+      waiting)", title "Group: x (n/6+mw)". Waitlisted players
+      already had full chat (kind-9 channel messages are not
+      membership-gated) - verified, no change needed there.
+- [x] Create group from the dashboard: the Group button now pops a
+      menu (Open group window / Create a new group) - creating opens
+      the group window AND seeds the new group in one flow.
+- [x] Connectivity strip on the main window: "Relays: N/M connected
+      (OFFLINE - messages will queue) + pending count", staged by
+      the sync thread, painted via WM_CONNUPDATE.
+- [x] UI friendliness: fonts -13/-15 -> -16/-19 (bigger controls),
+      Dark mode toggle (dark_mode= in ini, dark brush + light text on
+      statics/listbox, restart for full effect).
+NOTE: leader roster right-click still reads name-only lines - if the
+      new "(can invite)" markers confuse member vs waitlist
+      right-clicks, promote finds waitlist names first (widx).
+
 NEXT UP (in order):
 1. PERSISTENT RELAY CONNECTION
 2. Guild directory event + GUI editor for guild keys

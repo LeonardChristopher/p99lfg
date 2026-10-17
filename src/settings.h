@@ -29,6 +29,8 @@ typedef struct {
     /* LFG time limit: minutes a character stays LFG before the app
      * auto-toggles it off (and publishes lfg:false). 0 = no limit. */
     int lfg_limit_minutes;
+    /* dark mode: dark background + light text on the main window */
+    int dark_mode;
 } Settings;
 /* Load from path (missing file = defaults, no error). */
 void settings_load(Settings *s, const char *path);

@@ -150,6 +150,7 @@ static char g_pending_popup[256];
 static int g_pending_invite;
 static char g_pending_invite_channel[CHANNEL_NAME_MAX];
 static char g_pending_invite_by[64];
+static char g_pending_invite_role[16];
 static char g_inv_channel[CHANNEL_NAME_MAX];
 static char g_inv_role[16];
 static char g_inv_sender[64];
@@ -211,6 +212,7 @@ static ChatPeer *chat_peer_active(void)
 #define WM_GROUPREFRESH (WM_USER + 5)
 #define WM_INVITEPOPUP (WM_USER + 6)
 #define WM_MICUPDATE (WM_USER + 7)
+#define WM_CONNUPDATE (WM_USER + 8)
 
 /* ---- last-seen presence (option 1: freshness from event timestamps) ---- */
 #define PRESENCE_MAX 512
@@ -342,6 +344,7 @@ static const char *presence_mark(const char *name)
 #define ID_GROUP_NODE 268
 #define ID_GROUP_VTEST 269
 #define ID_LFG_LIMIT 270
+#define ID_BTN_DARK 271
 #define ID_VO_MIC 270
 #define ID_VO_OUTPUT 271
 #define ID_VO_PTT 272
@@ -520,6 +523,8 @@ static void on_dm(const char *sender_pubkey, const char *content, void *ud)
                  "%s", ch);
         snprintf(g_pending_invite_by, sizeof(g_pending_invite_by), "%s",
                  sender_name);
+        snprintf(g_pending_invite_role, sizeof(g_pending_invite_role), "%s",
+                 role);
         g_pending_invite = 1;
         PostMessageA(g_hwnd, WM_INVITEPOPUP, 1, 0);
         return;
@@ -592,8 +597,8 @@ static void group_roster_refresh(void)
     group_unlock();
     char text[1024];
     size_t o = 0;
-    o += (size_t)snprintf(text + o, sizeof(text) - o, "Group (%d/6):\r\n",
-                          snap_nm);
+    o += (size_t)snprintf(text + o, sizeof(text) - o, "Group (%d/6 + %d waiting):\r\n",
+                          snap_nm, snap_nw);
     for (int i = 0; i < snap_nm; i++)
         o += (size_t)snprintf(text + o, sizeof(text) - o, "  %s%s%s\r\n",
                               snap_m[i].name,
@@ -614,11 +619,11 @@ static void group_roster_refresh(void)
         char title[128];
         int pending = sync_outbox_pending(&g_sync);
         if (pending > 0)
-            snprintf(title, sizeof(title), "Group: %s (%d/6) - %d sending",
-                     g_group_name, snap_nm, pending);
+            snprintf(title, sizeof(title), "Group: %s (%d/6+%dw) - %d sending",
+                     g_group_name, snap_nm, snap_nw, pending);
         else
-            snprintf(title, sizeof(title), "Group: %s (%d/6)",
-                     g_group_name, snap_nm);
+            snprintf(title, sizeof(title), "Group: %s (%d/6+%dw)",
+                     g_group_name, snap_nm, snap_nw);
         SetWindowTextA(g_group_wnd, title);
     }
 }
@@ -887,6 +892,23 @@ static DWORD WINAPI sync_thread(LPVOID arg)
                 last_pending = pending;
                 PostMessageA(g_hwnd, WM_GROUPREFRESH, 0, 0);
             }
+        }
+        {
+            /* connectivity strip: stage the text here (sync thread),
+             * the UI thread paints it via WM_CONNUPDATE - never touch
+             * controls from this thread (roster bug lesson). */
+            int conn = 0;
+            for (int i = 0; i < g_sync.nrelays; i++)
+                if (g_sync.relays[i].connected)
+                    conn++;
+            int pending = sync_outbox_pending(&g_sync);
+            snprintf(g_conn_text, sizeof(g_conn_text),
+                     "Relays: %d/%d connected%s   messages pending: %d",
+                     conn, g_sync.nrelays,
+                     conn == 0 ? "  (OFFLINE - messages will queue)" : "",
+                     pending);
+            if (g_hwnd)
+                PostMessageA(g_hwnd, WM_CONNUPDATE, 0, 0);
         }
         if (g_log && g_debug && (round % 12 == 0)) {
             log_printf("sync poll round %d: ", round);
@@ -1350,8 +1372,13 @@ static void create_controls(HWND hwnd, HFONT hf)
                   WS_CHILD | WS_VISIBLE, 395, 470, 75, 22, hwnd, (HMENU)ID_BTN_CLEAR, NULL, NULL);
     CreateWindowA("BUTTON", "History",
                   WS_CHILD | WS_VISIBLE, 475, 470, 70, 22, hwnd, (HMENU)ID_BTN_HISTORY, NULL, NULL);
+    CreateWindowA("BUTTON", "Dark mode",
+                  WS_CHILD | WS_VISIBLE, 550, 470, 75, 22, hwnd, (HMENU)ID_BTN_DARK, NULL, NULL);
     g_st_dir = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE,
                              10, 500, 690, 20, hwnd, (HMENU)ID_ST_DIR, NULL, NULL);
+    g_st_conn = CreateWindowA("STATIC", "Relays: connecting...",
+                              WS_CHILD | WS_VISIBLE,
+                              10, 522, 690, 20, hwnd, NULL, NULL, NULL);
 
     HWND ctrl = GetWindow(hwnd, GW_CHILD);
     while (ctrl) {
@@ -2852,6 +2879,24 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         group_refresh();
         group_roster_refresh();
         return 0;
+    case WM_CONNUPDATE:
+        if (g_st_conn)
+            SetWindowTextA(g_st_conn, g_conn_text);
+        return 0;
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLORLISTBOX: {
+        /* dark mode: light text on dark controls */
+        HDC dc = (HDC)wp;
+        if (g_settings.dark_mode) {
+            SetTextColor(dc, RGB(230, 230, 230));
+            SetBkColor(dc, RGB(24, 24, 28));
+            static HBRUSH dk = NULL;
+            if (!dk)
+                dk = CreateSolidBrush(RGB(24, 24, 28));
+            return (LRESULT)dk;
+        }
+        break;
+    }
     case WM_MICUPDATE: {
         /* audio thread posted a new mic level: paint the indicator.
          * off    = capture not running or PTT not held
@@ -2920,23 +2965,41 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                     if (g_chars && g_chars->count > 0)
                         snprintf(myname, sizeof(myname), "%s",
                                  g_chars->chars[0].name);
+                    int waitlisted = strcmp(g_pending_invite_role, "wait") == 0;
                     group_lock();
-                    int already = 0;
-                    for (int i = 0; i < g_group_nmembers; i++)
-                        if (strcmp(g_group_members[i].pubkey, g_sync.pubkey) == 0)
-                            already = 1;
-                    if (!already && g_group_nmembers < GROUP_MEMBERS_MAX) {
-                        snprintf(g_group_members[g_group_nmembers].name,
-                                 sizeof(g_group_members[0].name), "%s", myname);
-                        snprintf(g_group_members[g_group_nmembers].pubkey,
-                                 sizeof(g_group_members[0].pubkey), "%s",
-                                 g_sync.pubkey);
-                        g_group_nmembers++;
+                    if (waitlisted) {
+                        int already = 0;
+                        for (int i = 0; i < g_group_nwait; i++)
+                            if (strcmp(g_group_wait[i].pubkey, g_sync.pubkey) == 0)
+                                already = 1;
+                        if (!already && g_group_nwait < GROUP_WAIT_MAX) {
+                            snprintf(g_group_wait[g_group_nwait].name,
+                                     sizeof(g_group_wait[0].name), "%s", myname);
+                            snprintf(g_group_wait[g_group_nwait].pubkey,
+                                     sizeof(g_group_wait[0].pubkey), "%s",
+                                     g_sync.pubkey);
+                            g_group_nwait++;
+                        }
+                    } else {
+                        int already = 0;
+                        for (int i = 0; i < g_group_nmembers; i++)
+                            if (strcmp(g_group_members[i].pubkey, g_sync.pubkey) == 0)
+                                already = 1;
+                        if (!already && g_group_nmembers < GROUP_MEMBERS_MAX) {
+                            snprintf(g_group_members[g_group_nmembers].name,
+                                     sizeof(g_group_members[0].name), "%s", myname);
+                            snprintf(g_group_members[g_group_nmembers].pubkey,
+                                     sizeof(g_group_members[0].pubkey), "%s",
+                                     g_sync.pubkey);
+                            g_group_nmembers++;
+                        }
                     }
                     group_unlock();
                     group_control_send(&g_sync, g_pending_invite_channel,
                                        myname, g_sync.pubkey, 0);
-                    group_log_append("--- joined group ---\r\n");
+                    group_log_append(waitlisted
+                        ? "--- joined group (waitlist - full chat access) ---\r\n"
+                        : "--- joined group ---\r\n");
                 }
                 group_roster_refresh();
                 group_refresh();
@@ -3021,10 +3084,38 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case ID_BTN_FAV: on_fav_toggle(); return 0;
         case ID_BTN_RATE: on_rate(); return 0;
         case ID_BTN_CHAT: on_chat(); return 0;
-        case ID_GROUP_TAB: on_group_window(); return 0;
+        case ID_GROUP_TAB: {
+            /* dashboard entry point: open the group window; if no
+             * group is joined/owned, offer to create one directly */
+            RECT rc;
+            GetWindowRect((HWND)lp ? (HWND)lp : g_hwnd, &rc);
+            POINT pt = { rc.left + 160, rc.top + 100 };
+            HMENU menu = CreatePopupMenu();
+            AppendMenuA(menu, MF_STRING, 0, "Open group window");
+            AppendMenuA(menu, MF_STRING, 1, "Create a new group");
+            int cmd = (int)TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD,
+                                          pt.x, pt.y, 0, hwnd, NULL);
+            DestroyMenu(menu);
+            if (cmd == 1 && !g_group_name[0]) {
+                on_group_window();
+                if (g_group_wnd)
+                    on_group_create(g_group_wnd);
+            } else {
+                on_group_window();
+            }
+            return 0;
+        }
         case ID_BTN_SETNAME: on_set_name(); return 0;
         case ID_BTN_CLEAR: on_clear_list(); return 0;
         case ID_BTN_HISTORY: on_history_window(); return 0;
+        case ID_BTN_DARK:
+            g_settings.dark_mode = !g_settings.dark_mode;
+            settings_save(&g_settings, g_inipath);
+            InvalidateRect(hwnd, NULL, TRUE);
+            MessageBoxA(hwnd, "Dark mode toggled. Restart the app for the\n"
+                        "full effect (control backgrounds refresh on start).",
+                        "p99lfg", MB_ICONINFORMATION);
+            return 0;
         case ID_BTN_QR: on_show_qr(); return 0;
         case ID_BTN_CHAR_ADD: on_char_add(); return 0;
         case ID_BTN_CHAR_DEL: on_char_del(); return 0;
@@ -3246,14 +3337,16 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     wc.hInstance = hInst;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
-    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.hbrBackground = g_settings.dark_mode
+                       ? (HBRUSH)GetStockObject(BLACK_BRUSH)
+                       : (HBRUSH)(COLOR_BTNFACE + 1);
     wc.lpszClassName = "p99lfg";
     RegisterClassA(&wc);
 
-    HFONT hf = CreateFontA(-13, 0, 0, 0, FW_NORMAL, 0, 0, 0,
+    HFONT hf = CreateFontA(-16, 0, 0, 0, FW_NORMAL, 0, 0, 0,
                            ANSI_CHARSET, 0, 0, CLEARTYPE_QUALITY,
                            DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
-    HFONT hfb = CreateFontA(-15, 0, 0, 0, FW_BOLD, 0, 0, 0,
+    HFONT hfb = CreateFontA(-19, 0, 0, 0, FW_BOLD, 0, 0, 0,
                            ANSI_CHARSET, 0, 0, CLEARTYPE_QUALITY,
                            DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
     /* section headers use the bold face; pass both via a global */
