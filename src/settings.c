@@ -42,6 +42,14 @@ void settings_load(Settings *s, const char *path)
             s->lfg_limit_minutes = atoi(line + 18);
         else if (strncmp(line, "dark_mode=", 10) == 0)
             s->dark_mode = atoi(line + 10) == 1;
+        else if (strncmp(line, "win_x=", 6) == 0)
+            s->win_x = atoi(line + 6);
+        else if (strncmp(line, "win_y=", 6) == 0)
+            s->win_y = atoi(line + 6);
+        else if (strncmp(line, "win_w=", 6) == 0)
+            s->win_w = atoi(line + 6);
+        else if (strncmp(line, "win_h=", 6) == 0)
+            s->win_h = atoi(line + 6);
         else if (strncmp(line, "guild_channel=", 14) == 0 &&
                  s->nguild_channels < GUILD_CHANNELS_MAX) {
             snprintf(s->guild_channels[s->nguild_channels],
@@ -68,6 +76,10 @@ int settings_save(const Settings *s, const char *path)
     fprintf(f, "voice_ptt_button=%d\n", s->voice_ptt_button);
     fprintf(f, "lfg_limit_minutes=%d\n", s->lfg_limit_minutes);
     fprintf(f, "dark_mode=%d\n", s->dark_mode ? 1 : 0);
+    fprintf(f, "win_x=%d\n", s->win_x);
+    fprintf(f, "win_y=%d\n", s->win_y);
+    fprintf(f, "win_w=%d\n", s->win_w);
+    fprintf(f, "win_h=%d\n", s->win_h);
     for (int i = 0; i < s->nguild_channels; i++)
         fprintf(f, "guild_channel=%s\n", s->guild_channels[i]);
     fclose(f);

@@ -440,11 +440,24 @@ static void upsert_remote(const SyncRemoteEntry *e)
         lfg_remove(g_state, e->name);
 }
 
+/* LFG event freshness: the app republishes every ~60s while running,
+ * so an event older than this means the player went offline without
+ * toggling LFG off. Receivers disregard stale listings until a fresh
+ * event arrives (owner toggles LFG on again). */
+#define LFG_EVENT_STALE_SECS (4 * 3600)
+
 static void on_remote_event(const SyncRemoteEntry *entry, const char *pubkey, void *ud)
 {
     (void)pubkey; (void)ud;
     if (!g_hwnd)
         return;
+    /* stale listing: remove it if present, never (re)add it */
+    if (entry->created_at &&
+        (uint64_t)time(NULL) - entry->created_at > LFG_EVENT_STALE_SECS) {
+        lfg_remove(g_state, entry->name);
+        PostMessageA(g_hwnd, WM_REMOTE, 0, 0);
+        return;
+    }
     upsert_remote(entry);
     presence_touch_key(entry->name, pubkey,
                        entry->created_at ? entry->created_at
@@ -2359,6 +2372,14 @@ static void on_group_voice_toggle(HWND dlg)
 }
 static LRESULT CALLBACK group_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
+    if (msg == WM_GETMINMAXINFO) {
+        /* keep the resizable group window from collapsing under its
+         * own layout math */
+        MINMAXINFO *mmi = (MINMAXINFO *)lp;
+        mmi->ptMinTrackSize.x = 640;
+        mmi->ptMinTrackSize.y = 400;
+        return 0;
+    }
     if (msg == WM_SIZE) {
         /* resizable: the chat log stretches with the window; the
          * control column (roster/buttons) stays fixed-width on the
@@ -2615,342 +2636,9 @@ static LRESULT CALLBACK qr_wnd_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
         EndPaint(w, &ps);
         return 0;
     }
-    case WM_DESTROY:
-        g_qr_wnd = NULL;
+        case WM_DESTROY:
+        PostQuitMessage(0);
         return 0;
-    }
-    return DefWindowProcA(w, msg, wp, lp);
-}
-
-static void on_show_qr(void)
-{
-    if (!g_sync.privkey[0]) {
-        MessageBoxA(g_hwnd, "No key available.", "p99lfg", MB_ICONINFORMATION);
-        return;
-    }
-    uint8_t tmp[qrcodegen_BUFFER_LEN_MAX];
-    if (!qrcodegen_encodeText(g_sync.privkey, tmp, g_qr, qrcodegen_Ecc_MEDIUM,
-                              qrcodegen_VERSION_MIN, qrcodegen_VERSION_MAX,
-                              qrcodegen_Mask_AUTO, true)) {
-        MessageBoxA(g_hwnd, "Could not encode key as QR.", "p99lfg", MB_ICONINFORMATION);
-        return;
-    }
-    g_qr_size = qrcodegen_getSize(g_qr);
-    g_qr_ready = 1;
-
-    WNDCLASSA wc = {0};
-    wc.lpfnWndProc = qr_wnd_proc;
-    wc.hInstance = GetModuleHandleA(NULL);
-    wc.hbrBackground = (HBRUSH)GetStockObject(WHITE_BRUSH);
-    wc.lpszClassName = "p99lfg_qr";
-    RegisterClassA(&wc);
-
-    if (g_qr_wnd) {
-        InvalidateRect(g_qr_wnd, NULL, TRUE);
-        SetForegroundWindow(g_qr_wnd);
-        return;
-    }
-    int px = g_qr_size * 6;
-    g_qr_wnd = CreateWindowExA(WS_EX_TOPMOST, "p99lfg_qr",
-                               "p99lfg key - scan with the iOS app",
-                               WS_OVERLAPPEDWINDOW,
-                               CW_USEDEFAULT, CW_USEDEFAULT, px + 40, px + 70,
-                               g_hwnd, NULL, NULL, NULL);
-    ShowWindow(g_qr_wnd, SW_SHOW);
-    UpdateWindow(g_qr_wnd);
-}
-
-static BOOL list_pick_row(POINT pt)
-{
-    LRESULT idx = SendMessageA(g_list, LB_ITEMFROMPOINT, 0, MAKELPARAM(pt.x, pt.y));
-    if (HIWORD(idx) != 0)
-        return FALSE;
-    SendMessageA(g_list, LB_SETCURSEL, LOWORD(idx), 0);
-    return TRUE;
-}
-
-static void known_save(void);
-static void on_clear_list(void)
-{
-    /* wipe non-favourite entries (manual + log-scan + expired remotes);
-     * remote players come back on their next event */
-    lfg_remove_manual_all(g_state);
-    /* user asked for the old keypairs gone: purge the known cache too
-     * (names/keys/last-seen), then persist the purge */
-    g_npresence = 0;
-    known_save();
-    /* block relay re-adds: every name currently listed (manual,
-     * log-derived, remote) goes on the hidden list so the next poll
-     * cannot resurrect them. Persisted. */
-    for (int i = 0; i < lfg_count(g_state); i++) {
-        const LfgEntry *e = lfg_get(g_state, i);
-        if (e->name[0] && !user_hidden(e->name) && g_nhidden < HIDDEN_MAX)
-            snprintf(g_hidden[g_nhidden++], 64, "%s", e->name);
-    }
-    hidden_save();
-    /* also purge log-derived entries by clearing the in-memory list */
-    for (int i = lfg_count(g_state) - 1; i >= 0; i--) {
-        const LfgEntry *e = lfg_get(g_state, i);
-        if (g_favs && fav_has(g_favs, e->name))
-            continue;
-        char namebuf[64];
-        snprintf(namebuf, sizeof(namebuf), "%s", e->name);
-        lfg_remove(g_state, namebuf);
-    }
-    populate_list();
-}
-
-/* ---- history window: known players not seen in >= 1 hour ---- */
-#define HISTORY_STALE_SECS 3600
-static HWND g_hist_wnd, g_hist_list;
-static char g_knownpath[LFG_PATH_MAX];
-
-static void known_save(void)
-{
-    if (!g_knownpath[0])
-        return;
-    FILE *f = fopen(g_knownpath, "w");
-    if (!f)
-        return;
-    for (int i = 0; i < g_npresence; i++) {
-        if (!g_presence[i].pubkey[0])
-            continue;
-        fprintf(f, "%s|%s|%llu|%s|%d|%s\n",
-                 g_presence[i].name, g_presence[i].pubkey,
-                 (unsigned long long)g_presence[i].last_seen,
-                 g_presence[i].cls, g_presence[i].level,
-                 g_presence[i].user);
-    }
-    fclose(f);
-}
-
-#define KNOWN_STALE_SECS (7 * 24 * 3600) /* a week without any event
-                                            and the entry is gone for
-                                            good - old keypairs from
-                                            throwaway identities don't
-                                            haunt the list forever */
-
-static void hidden_load(void)
-{
-    if (!g_hiddenpath[0])
-        return;
-    FILE *f = fopen(g_hiddenpath, "r");
-    if (!f)
-        return;
-    char line[80];
-    while (fgets(line, sizeof(line), f) && g_nhidden < HIDDEN_MAX) {
-        char *nl = strpbrk(line, "\r\n");
-        if (nl)
-            *nl = '\0';
-        if (line[0])
-            snprintf(g_hidden[g_nhidden++], 64, "%s", line);
-    }
-    fclose(f);
-}
-
-static void hidden_save(void)
-{
-    if (!g_hiddenpath[0])
-        return;
-    FILE *f = fopen(g_hiddenpath, "w");
-    if (!f)
-        return;
-    for (int i = 0; i < g_nhidden; i++)
-        fprintf(f, "%s\n", g_hidden[i]);
-    fclose(f);
-}
-
-static int user_hidden(const char *name)
-{
-    if (!name || !name[0])
-        return 0;
-    for (int i = 0; i < g_nhidden; i++)
-        if (strcmp(g_hidden[i], name) == 0)
-            return 1;
-    return 0;
-}
-
-static void known_load(void)
-{
-    if (!g_knownpath[0])
-        return;
-    FILE *f = fopen(g_knownpath, "r");
-    if (!f)
-        return;
-    uint64_t now = (uint64_t)time(NULL);
-    char line[600];
-    while (fgets(line, sizeof(line), f) && g_npresence < PRESENCE_MAX) {
-        char *nl = strpbrk(line, "\r\n");
-        if (nl)
-            *nl = '\0';
-        PresenceEntry *p = &g_presence[g_npresence];
-        char lvl[16] = "0";
-        if (sscanf(line, "%63[^|]|%64[^|]|%llu|%31[^|]|%15[^|]|%63[^\n]",
-                   p->name, p->pubkey,
-                   (unsigned long long *)&p->last_seen,
-                   p->cls, lvl, p->user) >= 3) {
-            /* prune: entries not seen in the stale window are dropped
-             * here AND the save below persists the prune */
-            if (p->last_seen && now - p->last_seen > KNOWN_STALE_SECS)
-                continue;
-            p->level = atoi(lvl);
-            g_npresence++;
-        }
-    }
-    fclose(f);
-}
-
-static void history_populate(void)
-{
-    if (!g_hist_list)
-        return;
-    SendMessageA(g_hist_list, LB_RESETCONTENT, 0, 0);
-    for (int i = 0; i < g_npresence; i++) {
-        if (!g_presence[i].pubkey[0] || g_presence[i].last_seen == 0)
-            continue;
-        uint64_t age = (uint64_t)time(NULL) - g_presence[i].last_seen;
-        if (age < HISTORY_STALE_SECS)
-            continue;
-        char row[256];
-        char when[32];
-        if (age < 86400)
-            snprintf(when, sizeof(when), "%lluh", (unsigned long long)(age / 3600));
-        else
-            snprintf(when, sizeof(when), "%llud", (unsigned long long)(age / 86400));
-        snprintf(row, sizeof(row), "%s  [%s]  seen %s ago",
-                 g_presence[i].name,
-                 g_presence[i].cls[0] ? g_presence[i].cls : "?",
-                 when);
-        SendMessageA(g_hist_list, LB_ADDSTRING, 0, (LPARAM)row);
-    }
-}
-
-static LRESULT CALLBACK hist_wnd_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp);
-
-static void on_history_window(void)
-{
-    if (g_hist_wnd) {
-        history_populate();
-        ShowWindow(g_hist_wnd, SW_SHOWNORMAL);
-        SetForegroundWindow(g_hist_wnd);
-        return;
-    }
-    WNDCLASSA wc = {0};
-    wc.lpfnWndProc = hist_wnd_proc;
-    wc.hInstance = GetModuleHandleA(NULL);
-    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
-    wc.lpszClassName = "p99lfg_hist";
-    RegisterClassA(&wc);
-    RECT pr;
-    GetWindowRect(g_hwnd, &pr);
-    g_hist_wnd = CreateWindowExA(0, "p99lfg_hist",
-                                 "History - players offline 1h+",
-                                 WS_OVERLAPPEDWINDOW,
-                                 pr.right - 380, pr.top + 60, 360, 400,
-                                 g_hwnd, NULL, NULL, NULL);
-    g_hist_list = CreateWindowExA(WS_EX_CLIENTEDGE, "LISTBOX", NULL,
-                                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
-                                 10, 10, 320, 340, g_hist_wnd, (HMENU)252, NULL, NULL);
-    HFONT hf = (HFONT)SendMessageA(g_hwnd, WM_GETFONT, 0, 0);
-    SendMessageA(g_hist_list, WM_SETFONT, (WPARAM)hf, TRUE);
-    ShowWindow(g_hist_wnd, SW_SHOW);
-    history_populate();
-}
-
-static LRESULT CALLBACK hist_wnd_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
-{
-    if (msg == WM_CONTEXTMENU && (HWND)wp == g_hist_list) {
-        POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
-        LRESULT idx = SendMessageA(g_hist_list, LB_GETCURSEL, 0, 0);
-        if (idx == LB_ERR) {
-            /* pick row under cursor */
-            POINT client_pt = pt;
-            ScreenToClient(g_hist_list, &client_pt);
-            LRESULT pick = SendMessageA(g_hist_list, LB_ITEMFROMPOINT, 0,
-                                        MAKELPARAM(client_pt.x, client_pt.y));
-            if (HIWORD(pick) != 0)
-                return 0;
-            idx = LOWORD(pick);
-            SendMessageA(g_hist_list, LB_SETCURSEL, (WPARAM)idx, 0);
-        }
-        char buf[256] = {0};
-        SendMessageA(g_hist_list, LB_GETTEXT, (WPARAM)idx, (LPARAM)buf);
-        HMENU menu = CreatePopupMenu();
-        AppendMenuA(menu, MF_STRING, ID_BTN_FAV, "Toggle Favourite");
-        TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, w, NULL);
-        DestroyMenu(menu);
-        /* remember which history row for the command handler */
-        static char hist_sel_name[64];
-        char *name = buf;
-        char *sp = strchr(name, ' ');
-        if (sp) {
-            size_t n = (size_t)(sp - name);
-            if (n < sizeof(hist_sel_name)) {
-                memcpy(hist_sel_name, name, n);
-                hist_sel_name[n] = '\0';
-                SetWindowLongPtrA(w, GWLP_USERDATA, (LONG_PTR)hist_sel_name);
-            }
-        }
-        return 0;
-    }
-    if (msg == WM_COMMAND && LOWORD(wp) == ID_BTN_FAV) {
-        const char *name = (const char *)GetWindowLongPtrA(w, GWLP_USERDATA);
-        if (name && name[0])
-            fav_toggle(g_favs, name);
-        return 0;
-    }
-    return DefWindowProcA(w, msg, wp, lp);
-}
-
-static LRESULT CALLBACK name_wnd_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
-{
-    if (msg == WM_COMMAND && LOWORD(wp) == IDOK) {
-        HWND ed = (HWND)GetWindowLongPtrA(w, GWLP_USERDATA);
-        char nm[64];
-        GetWindowTextA(ed, nm, sizeof(nm));
-        snprintf(g_settings.displayname, sizeof(g_settings.displayname), "%s", nm);
-        settings_save(&g_settings, g_inipath);
-        snprintf(g_sync.user_name, sizeof(g_sync.user_name), "%s", nm);
-        profile_announce(&g_sync, nm);
-        DestroyWindow(w);
-        return 0;
-    }
-    return DefWindowProcA(w, msg, wp, lp);
-}
-
-static void on_set_name(void)
-{
-    WNDCLASSA wc = {0};
-    wc.lpfnWndProc = name_wnd_proc;
-    wc.hInstance = GetModuleHandleA(NULL);
-    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
-    wc.lpszClassName = "p99lfg_name";
-    RegisterClassA(&wc);
-    HWND w = CreateWindowExA(0, "p99lfg_name", "Enter your display name",
-                             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-                             300, 300, 320, 130, g_hwnd, NULL, NULL, NULL);
-    CreateWindowA("STATIC", "Name (shown to other players):",
-                  WS_CHILD | WS_VISIBLE, 10, 12, 280, 18, w, NULL, NULL, NULL);
-    HWND ed = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", g_settings.displayname,
-                  WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                  10, 34, 290, 22, w, (HMENU)250, NULL, NULL);
-    CreateWindowA("BUTTON", "Save",
-                  WS_CHILD | WS_VISIBLE, 120, 64, 80, 24,
-                  w, (HMENU)IDOK, NULL, NULL);
-    HFONT hf = (HFONT)SendMessageA(g_hwnd, WM_GETFONT, 0, 0);
-    HWND c = GetWindow(w, GW_CHILD);
-    while (c) {
-        SendMessageA(c, WM_SETFONT, (WPARAM)hf, TRUE);
-        c = GetWindow(c, GW_HWNDNEXT);
-    }
-    SetWindowLongPtrA(w, GWLP_USERDATA, (LONG_PTR)ed);
-    ShowWindow(w, SW_SHOW);
-    SetFocus(ed);
-}
-
-static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
-{
-    switch (msg) {
     case WM_CREATE: {
         CREATESTRUCTA *cs = (CREATESTRUCTA *)lp;
         create_controls(hwnd, (HFONT)cs->lpCreateParams);
@@ -3150,6 +2838,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
     case WM_COMMAND:
+        if (LOWORD(wp) == ID_LIST && HIWORD(wp) == LBN_DBLCLK) {
+            /* the natural gesture: double-click a player to chat */
+            on_chat();
+            return 0;
+        }
         switch (LOWORD(wp)) {
         case ID_BTN_REFRESH: do_poll(); return 0;
         case ID_BTN_DIR: on_pick_dir(hwnd); return 0;
@@ -3225,12 +2918,22 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             return 0;
         }
         break;
-    case WM_DESTROY:
+    case WM_DESTROY: {
+        /* remember where the user put the window */
+        WINDOWPLACEMENT wp_ = {0};
+        wp_.length = sizeof(wp_);
+        GetWindowPlacement(hwnd, &wp_);
+        RECT rc = wp_.rcNormalPosition;
+        g_settings.win_x = rc.left;
+        g_settings.win_y = rc.top;
+        g_settings.win_w = rc.right - rc.left;
+        g_settings.win_h = rc.bottom - rc.top;
+        settings_save(&g_settings, g_inipath);
         sync_persist_stop();
-    if (g_node_on)
-        relay_node_stop();
-    g_voice_thread_run = 0;
-    g_sync_thread_run = 0;
+        if (g_node_on)
+            relay_node_stop();
+        g_voice_thread_run = 0;
+        g_sync_thread_run = 0;
         if (g_sync_thread)
             WaitForSingleObject(g_sync_thread, 6000);
         {
@@ -3240,6 +2943,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         KillTimer(hwnd, g_timer);
         PostQuitMessage(0);
         return 0;
+    }
     }
     return DefWindowProcA(hwnd, msg, wp, lp);
 }
@@ -3462,8 +3166,50 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
 
     g_hwnd = CreateWindowExA(0, "p99lfg", "p99lfg  -  Project 1999 Group Finder",
                              WS_OVERLAPPEDWINDOW,
-                             CW_USEDEFAULT, CW_USEDEFAULT, 900, 640,
+                             g_settings.win_w > 0 ? g_settings.win_x : CW_USEDEFAULT,
+                             g_settings.win_w > 0 ? g_settings.win_y : CW_USEDEFAULT,
+                             g_settings.win_w > 400 ? g_settings.win_w : 900,
+                             g_settings.win_h > 300 ? g_settings.win_h : 640,
                              NULL, NULL, hInst, hf);
+
+    /* Tooltips: the button captions are terse; new users need the
+     * full story (esp. the voice trio). */
+    {
+        HWND tt = CreateWindowExA(0, TOOLTIPS_CLASSA, NULL,
+                                  WS_POPUP | TTS_ALWAYSTIP,
+                                  CW_USEDEFAULT, CW_USEDEFAULT,
+                                  CW_USEDEFAULT, CW_USEDEFAULT,
+                                  g_hwnd, NULL, NULL, NULL);
+        /* find the buttons by id at runtime */
+        struct { int id; const char *text; } idtips[] = {
+            { ID_BTN_REFRESH, "Refresh the LFG list from the relays and your log folder" },
+            { ID_BTN_DIR, "Pick the EverQuest log folder so the app can see who is LFG in your zone" },
+            { ID_BTN_ADD, "Add yourself to the LFG list manually" },
+            { ID_BTN_REMOVE, "Remove the selected player from the list" },
+            { ID_BTN_FAV, "Mark/unmark the selected player as a favourite" },
+            { ID_BTN_RATE, "Rate the selected player (competent/friendly/listens)" },
+            { ID_BTN_CHAT, "Private encrypted chat with the selected player (or double-click them)" },
+            { ID_GROUP_TAB, "Groups: open the group window or create a group (6+2, all 8 chat)" },
+            { ID_BTN_QR, "Show your Nostr identity as a QR code (import on another device)" },
+            { ID_BTN_SETNAME, "Set the display name other players see" },
+            { ID_BTN_CLEAR, "Clear the list AND hide everyone currently listed" },
+            { ID_BTN_HISTORY, "Past LFG players you have seen" },
+            { ID_BTN_DARK, "Toggle dark mode" },
+        };
+        for (unsigned i = 0; i < sizeof(idtips) / sizeof(idtips[0]); i++) {
+            HWND target = GetDlgItem(g_hwnd, idtips[i].id);
+            if (!target)
+                continue;
+            TOOLINFOA ti = {0};
+            ti.cbSize = sizeof(ti);
+            ti.uFlags = TTF_SUBCLASS | TTF_IDISHWND;
+            ti.hwnd = g_hwnd;
+            ti.uId = (UINT_PTR)target;
+            ti.lpszText = (LPSTR)idtips[i].text;
+            SendMessageA(tt, TTM_ADDTOOLA, 0, (LPARAM)&ti);
+        }
+    }
+
     if (!g_hwnd) {
         log_printf("window creation FAILED (err=%lu)\n", (unsigned long)GetLastError());
         if (g_log)

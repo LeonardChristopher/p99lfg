@@ -300,7 +300,7 @@ int sync_handle_message(SyncState *s, const char *msg)
                     char nums[24] = {0};
                     const char *cp2 = strstr(evobj, "\"created_at\":");
                     if (cp2) {
-                        cp2 += 14;
+                        cp2 += 13;
                         size_t ni = 0;
                         while (*cp2 >= '0' && *cp2 <= '9' && ni < sizeof(nums) - 1)
                             nums[ni++] = *cp2++;
@@ -330,7 +330,7 @@ int sync_handle_message(SyncState *s, const char *msg)
                         char nums[24] = {0};
                         const char *cp = strstr(evobj, "\"created_at\":");
                         if (cp) {
-                            cp += 14;
+                            cp += 13;
                             size_t ni = 0;
                             while (*cp >= '0' && *cp <= '9' && ni < sizeof(nums) - 1)
                                 nums[ni++] = *cp++;
@@ -381,7 +381,7 @@ int sync_handle_message(SyncState *s, const char *msg)
         char nums[24] = {0};
         const char *cp = strstr(evobj, "\"created_at\":");
         if (cp) {
-            cp += 14;
+            cp += 13;
             size_t ni = 0;
             while (*cp >= '0' && *cp <= '9' && ni < sizeof(nums) - 1)
                 nums[ni++] = *cp++;

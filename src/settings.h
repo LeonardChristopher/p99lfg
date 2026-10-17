@@ -31,6 +31,8 @@ typedef struct {
     int lfg_limit_minutes;
     /* dark mode: dark background + light text on the main window */
     int dark_mode;
+    /* remembered window placement (main window) */
+    int win_x, win_y, win_w, win_h;
 } Settings;
 /* Load from path (missing file = defaults, no error). */
 void settings_load(Settings *s, const char *path);

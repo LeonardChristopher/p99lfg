@@ -202,6 +202,24 @@ static void test_sync_messages(void)
         "[\"EVENT\",\"sub1\",{\"content\":\"hello world\")]";
     CHECK(sync_handle_message(&st, junk) == -1, "malformed event returns -1");
 
+    /* LFG event age: created_at rides through to the entry; a stale
+     * event (>4h) is the receiver-side filter's trigger (the GUI drops
+     * it; here we verify the timestamp round-trips so the filter has
+     * real data to act on) */
+    {
+        char evold[1024];
+        char content3[300], esc3[600];
+        sync_build_content(content3, sizeof(content3), "Oldtimer", "unrest", "20 Necro", 1);
+        json_escape_into(esc3, sizeof(esc3), content3);
+        snprintf(evold, sizeof(evold),
+            "[\"EVENT\",\"sub1\",{\"id\":\"stale-id-1\",\"pubkey\":\"pk\",\"created_at\":1,\"kind\":30078,"
+            "\"tags\":[],\"content\":\"%s\",\"sig\":\"y\"}]", esc3);
+        g_remote_calls = 0;
+        CHECK(sync_handle_message(&st, evold) == 1 && g_remote_calls == 1 &&
+              g_last_remote.created_at == 1,
+              "LFG event created_at round-trips (stale filter input)");
+    }
+
     /* kind-9 group chat event must reach the generic callback (this
      * regressed once: the kind list in sync.c missed kind 9 and receivers
      * silently dropped all channel messages while senders saw their own
