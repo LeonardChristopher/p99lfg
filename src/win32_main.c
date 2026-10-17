@@ -45,6 +45,8 @@
 
 static LfgState *g_state;
 static HWND g_hwnd, g_list, g_ed_name, g_ed_zone, g_st_dir;
+static HWND g_st_conn; /* live relay-connectivity strip */
+static char g_conn_text[128]; /* staged by the sync thread */
 static UINT g_timer;
 static HFONT g_font_bold;
 static SyncState g_sync;
