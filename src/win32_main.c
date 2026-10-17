@@ -923,8 +923,7 @@ static DWORD WINAPI sync_thread(LPVOID arg)
                 }
             }
             PostMessageA(g_hwnd, WM_REMOTE, 0, 0);
-            log_printf("lfg: time limit reached - toggled off
-");
+            log_printf("lfg: time limit reached - toggled off\n");
         }
         /* stale-LFG sweep (~once a minute): a user who quit without
          * toggling LFG off leaves a replaceable event on the relays
