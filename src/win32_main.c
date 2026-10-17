@@ -45,8 +45,6 @@
 
 static LfgState *g_state;
 static HWND g_hwnd, g_list, g_ed_name, g_ed_zone, g_st_dir;
-static HWND g_st_conn; /* live relay-connectivity strip */
-static char g_conn_text[128]; /* staged by the sync thread */
 static UINT g_timer;
 static HFONT g_font_bold;
 static SyncState g_sync;
@@ -61,6 +59,7 @@ static Settings g_settings;
 static char g_inipath[LFG_PATH_MAX];
 static HWND g_group_log, g_group_input, g_group_channel, g_group_roster;
 static HWND g_group_wnd;
+static char g_conn_text[128]; /* staged by the sync thread */
 static char g_group_name[CHANNEL_NAME_MAX];
 static char g_group_log_text[8192];
 static GroupMember g_group_members[GROUP_MEMBERS_MAX];
@@ -904,11 +903,14 @@ static DWORD WINAPI sync_thread(LPVOID arg)
                 if (g_sync.relays[i].connected)
                     conn++;
             int pending = sync_outbox_pending(&g_sync);
+            char who[80] = "";
+            if (g_settings.displayname[0])
+                snprintf(who, sizeof(who), "  |  %s", g_settings.displayname);
             snprintf(g_conn_text, sizeof(g_conn_text),
-                     "Relays: %d/%d connected%s   messages pending: %d",
+                     "Relays: %d/%d connected%s  |  LFG listed: %d%s",
                      conn, g_sync.nrelays,
                      conn == 0 ? "  (OFFLINE - messages will queue)" : "",
-                     pending);
+                     lfg_count(g_state), who);
             if (g_hwnd)
                 PostMessageA(g_hwnd, WM_CONNUPDATE, 0, 0);
         }
@@ -1378,9 +1380,7 @@ static void create_controls(HWND hwnd, HFONT hf)
                   WS_CHILD | WS_VISIBLE, 550, 470, 75, 22, hwnd, (HMENU)ID_BTN_DARK, NULL, NULL);
     g_st_dir = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE,
                              10, 500, 690, 20, hwnd, (HMENU)ID_ST_DIR, NULL, NULL);
-    g_st_conn = CreateWindowA("STATIC", "Relays: connecting...",
-                              WS_CHILD | WS_VISIBLE,
-                              10, 522, 690, 20, hwnd, NULL, NULL, NULL);
+
 
     HWND ctrl = GetWindow(hwnd, GW_CHILD);
     while (ctrl) {
@@ -2882,8 +2882,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         group_roster_refresh();
         return 0;
     case WM_CONNUPDATE:
-        if (g_st_conn)
-            SetWindowTextA(g_st_conn, g_conn_text);
+        /* single connectivity strip (top of the window): staged by
+         * the sync thread, painted here on the UI thread */
+        if (g_status)
+            SetWindowTextA(g_status, g_conn_text);
         return 0;
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLORLISTBOX: {
