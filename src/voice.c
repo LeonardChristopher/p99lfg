@@ -375,7 +375,7 @@ int voice_presence_publish_ip(SyncState *s, const char *channel,
                  "{\"voice\":\"%s:%d\"}", my_pubkey, udp_port);
     if (nostr_sign_event(&ev, s->privkey) != 0)
         return -1;
-    char msg[4200];
+    char msg[NOSTR_MSG_MAX];
     nostr_event_message(&ev, msg, sizeof(msg));
     return sync_send_event(s, msg);
 }

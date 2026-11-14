@@ -187,7 +187,7 @@ int sync_publish_char(SyncState *s, const char *name, const char *cls,
         s->user_name[0] ? s->user_name : "");
     if (nostr_sign_event(&ev, s->privkey) != 0)
         return -1;
-    char msg[2048];
+    char msg[NOSTR_MSG_MAX];
     nostr_event_message(&ev, msg, sizeof(msg));
     return sync_send_event(s, msg);
 }
@@ -203,7 +203,7 @@ int sync_publish(SyncState *s, const char *content_json)
     if (nostr_sign_event(&ev, s->privkey) != 0)
         return -1;
 
-    char msg[2048];
+    char msg[NOSTR_MSG_MAX];
     nostr_event_message(&ev, msg, sizeof(msg));
 
     int ok = 0;

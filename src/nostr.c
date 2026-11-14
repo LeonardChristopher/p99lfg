@@ -64,26 +64,32 @@ static int from_hex(const char *in, uint8_t *out, size_t outlen)
     return 0;
 }
 
-static void random_bytes(uint8_t *out, size_t len)
+static int random_bytes(uint8_t *out, size_t len)
 {
 #ifdef _WIN32
     HCRYPTPROV h = 0;
     if (CryptAcquireContextA(&h, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT)) {
-        CryptGenRandom(h, (DWORD)len, out);
+        BOOL ok = CryptGenRandom(h, (DWORD)len, out);
         CryptReleaseContext(h, 0);
-        return;
+        return ok ? 0 : -1;
     }
+    return -1;
 #else
     int fd = open("/dev/urandom", O_RDONLY);
-    if (fd >= 0) {
-        ssize_t r = read(fd, out, len);
-        (void)r;
-        close(fd);
-        return;
+    if (fd < 0)
+        return -1;
+    size_t got = 0;
+    while (got < len) {
+        ssize_t n = read(fd, out + got, len - got);
+        if (n <= 0) {
+            close(fd);
+            return -1;
+        }
+        got += (size_t)n;
     }
+    close(fd);
+    return 0;
 #endif
-    for (size_t i = 0; i < len; i++)
-        out[i] = (uint8_t)rand();
 }
 
 int nostr_identity_load(const char *path, char pubkey_out[NOSTR_PUBKEY_HEX])
@@ -101,9 +107,9 @@ int nostr_identity_load(const char *path, char pubkey_out[NOSTR_PUBKEY_HEX])
         }
     }
     if (!f) {
-        srand((unsigned)time(NULL) ^ (unsigned)(uintptr_t)path);
         do {
-            random_bytes(sk, 32);
+            if (random_bytes(sk, 32) != 0)
+                return -1; /* no CSPRNG, no key: never fall back to rand() */
         } while (sk[0] == 0); /* invalid key guard; full validity checked below */
         to_hex(sk, 32, hex);
         FILE *wf = fopen(path, "w");
@@ -173,7 +179,7 @@ int nostr_import_key(const char *path, const char *privkey_hex,
 
 void nostr_serialize_for_id(const NostrEvent *ev, char *out, size_t outsz)
 {
-    char esc_content[4096];
+    char esc_content[NOSTR_ESC_MAX];
     json_escape(ev->content, esc_content, sizeof(esc_content));
     if (ev->ptag[0]) {
         /* kind-4 DM: p tag for the recipient, t tag so our REQ filter matches */
@@ -201,7 +207,7 @@ int nostr_sign_event(NostrEvent *ev, const char *privkey_hex)
     if (from_hex(privkey_hex, sk, 32) != 0)
         return -1;
 
-    char serial[2048];
+    char serial[NOSTR_SERIAL_MAX];
     nostr_serialize_for_id(ev, serial, sizeof(serial));
     uint8_t id32[32];
     sha256(serial, strlen(serial), id32);
@@ -228,7 +234,7 @@ int nostr_sign_event(NostrEvent *ev, const char *privkey_hex)
 
 size_t nostr_event_message(const NostrEvent *ev, char *out, size_t outsz)
 {
-    char esc_content[4096];
+    char esc_content[NOSTR_ESC_MAX];
     json_escape(ev->content, esc_content, sizeof(esc_content));
     if (ev->ptag[0]) {
         return (size_t)snprintf(out, outsz,

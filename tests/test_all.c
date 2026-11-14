@@ -74,7 +74,7 @@ static void test_event_serialization_and_sign(void)
     snprintf(ev.content, sizeof(ev.content),
              "{\"name\":\"Soandso\",\"zone\":\"sebilis\",\"class\":\"Mage\",\"level\":60,\"lfg\":true}");
 
-    char serial[2048];
+    char serial[NOSTR_SERIAL_MAX];
     nostr_serialize_for_id(&ev, serial, sizeof(serial));
     CHECK(strstr(serial, "[0,") == serial, "serialized starts with [0,");
     CHECK(strstr(serial, "\"t\",\"p99lfg\"") != NULL, "serialized contains t tag");
@@ -95,7 +95,7 @@ static void test_event_serialization_and_sign(void)
     CHECK(strlen(ev.id) == 64, "event id is 64 hex chars");
     CHECK(strlen(ev.sig) == 128, "sig is 128 hex chars");
 
-    char msg[4096];
+    char msg[NOSTR_MSG_MAX];
     size_t n = nostr_event_message(&ev, msg, sizeof(msg));
     CHECK(n > 200 && msg[0] == '[' && strstr(msg, "\"EVENT\"") != NULL, "event message shape");
     CHECK(strstr(msg, ev.id) != NULL, "event message contains id");
@@ -103,6 +103,33 @@ static void test_event_serialization_and_sign(void)
     char req[512];
     nostr_req_message("sub1", req, sizeof(req));
     CHECK(strstr(req, "\"REQ\"") != NULL && strstr(req, "p99lfg") != NULL, "req message shape");
+}
+
+/* Worst-case content (every byte a control char -> 6 escaped chars) must
+ * not truncate the id serialization or the EVENT message: a truncated
+ * serialization yields a wrong event id and relays reject the event. */
+static void test_serial_worst_case_no_truncation(void)
+{
+    NostrEvent ev = {0};
+    snprintf(ev.pubkey, sizeof(ev.pubkey), "%s",
+             "f9308a019258c31049344f85f89d5229b531c845836f99b08601f1138f03df5c");
+    ev.created_at = 1730000000;
+    ev.kind = NOSTR_KIND_LFG;
+    snprintf(ev.dtag, sizeof(ev.dtag), "green/x");
+    memset(ev.content, 0x01, sizeof(ev.content) - 1);
+
+    char serial[NOSTR_SERIAL_MAX];
+    char bigserial[65536];
+    nostr_serialize_for_id(&ev, serial, sizeof(serial));
+    nostr_serialize_for_id(&ev, bigserial, sizeof(bigserial));
+    CHECK(strcmp(serial, bigserial) == 0, "id serialization not truncated at worst-case content");
+
+    char msg[NOSTR_MSG_MAX];
+    char bigmsg[65536];
+    size_t n = nostr_event_message(&ev, msg, sizeof(msg));
+    nostr_event_message(&ev, bigmsg, sizeof(bigmsg));
+    CHECK(n < sizeof(msg) && strlen(msg) == n, "event message fits buffer, not truncated");
+    CHECK(strcmp(msg, bigmsg) == 0, "event message matches untruncated form");
 }
 
 static void test_core_parser(void)
@@ -648,6 +675,7 @@ int main(void)
     test_sha256_vectors();
     test_schnorr_bip340();
     test_event_serialization_and_sign();
+    test_serial_worst_case_no_truncation();
     test_core_parser();
     test_sync_messages();
     test_outbox();

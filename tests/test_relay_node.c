@@ -44,7 +44,7 @@ int main(void)
     snprintf(ev.dtag, sizeof(ev.dtag), "p99lfg-g-nodetest");
     snprintf(ev.content, sizeof(ev.content), "{\"from\":\"Nodeone\",\"msg\":\"hello node\"}");
     CHECK(nostr_sign_event(&ev, sk) == 0, "sign event");
-    char msg[2048];
+    char msg[NOSTR_MSG_MAX];
     nostr_event_message(&ev, msg, sizeof(msg));
     CHECK(ws_send_text(&c, msg) == 0, "send EVENT to node");
 
@@ -88,7 +88,7 @@ int main(void)
     snprintf(bad.content, sizeof(bad.content), "generic nostr text");
     /* note: no t tag -> not p99lfg-scoped */
     CHECK(nostr_sign_event(&bad, sk) == 0, "sign off-scope event");
-    char badmsg[2048];
+    char badmsg[NOSTR_MSG_MAX];
     nostr_event_message(&bad, badmsg, sizeof(badmsg));
     /* strip the t tag so it is genuinely off-scope: rebuild without tags */
     {

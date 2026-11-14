@@ -120,7 +120,7 @@ int main(void)
     snprintf(ev.dtag, sizeof(ev.dtag), "test");
     snprintf(ev.content, sizeof(ev.content), "{\"name\":\"Soandso\"}");
     CHECK(nostr_sign_event(&ev, key) == 0, "sign before publish");
-    char msg[2048];
+    char msg[NOSTR_MSG_MAX];
     nostr_event_message(&ev, msg, sizeof(msg));
     CHECK(ws_send_text(&conn, msg) == 0, "send EVENT");
 

@@ -6,7 +6,7 @@
 #define SYNC_MAX_RELAYS 6
 #define SYNC_SEEN_MAX 256
 #define SYNC_OUTBOX_MAX 32
-#define SYNC_OUTBOX_MSG 2048
+#define SYNC_OUTBOX_MSG NOSTR_MSG_MAX
 
 /* Synchronize LFG entries over Nostr relays.
  *

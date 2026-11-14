@@ -297,7 +297,7 @@ int chat_send_message_from(SyncState *s, const char *peer_pubkey_hex,
     snprintf(ev.ptag, sizeof(ev.ptag), "%s", peer_pubkey_hex);
     if (nostr_sign_event(&ev, s->privkey) != 0)
         return -1;
-    char msg[4200];
+    char msg[NOSTR_MSG_MAX];
     nostr_event_message(&ev, msg, sizeof(msg));
     int ok = 0;
     for (int i = 0; i < s->nrelays; i++) {
