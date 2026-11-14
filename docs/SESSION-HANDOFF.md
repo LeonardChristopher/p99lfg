@@ -608,3 +608,26 @@ Known rough edges to consider: group window layout is fixed-position;
 waitlist has no UI for the leader to promote manually (auto-promotes on
 leave only); `g_pending_popup` is a single slot (two popups in the same
 poll cycle overwrite each other - acceptable).
+
+---
+
+## 10. C hardening round (branch vibe/c-hardening-275368)
+
+Two fixes from the code review (user-approved), both in the serialization /
+keygen path shared by all platforms:
+
+- [x] `src/nostr.c` random_bytes() now returns int and FAILS HARD when the
+      CSPRNG is unavailable (CryptAcquireContext/CryptGenRandom on Windows,
+      /dev/urandom on POSIX with a short-read loop). The old silent rand()
+      fallback for IDENTITY KEY GENERATION is gone (nostr_identity_load
+      returns -1 instead). chat.c already behaved this way.
+- [x] Buffer math: NOSTR_CONTENT_MAX(2048) / NOSTR_ESC_MAX(6x+8) /
+      NOSTR_SERIAL_MAX / NOSTR_MSG_MAX now defined in nostr.h and used for
+      esc + serial buffers in nostr.c, msg buffers in sync.c, chat.c,
+      rating.c, channels.c, voice.c, SYNC_OUTBOX_MSG, RECON_SPOOL_MSG, and
+      the test buffers. Previously a worst-case content (all control chars)
+      truncated the id serialization -> wrong event id -> relay rejects.
+- [x] Regression test test_serial_worst_case_no_truncation in test_all.c.
+      `./build.sh` ALL TESTS PASSED (0 failures) incl. the new checks.
+- NOTE: the web port plan/handoff lives in section 9 on branch
+      vibe/web-core-wasm-275368 (PR #2), not yet merged to main.

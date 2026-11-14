@@ -85,7 +85,7 @@ int channel_send_ex(SyncState *s, const char *channel, const char *from_char,
     if (nostr_sign_event(&ev, s->privkey) != 0)
         return -1;
 
-    char msg[4200];
+    char msg[NOSTR_MSG_MAX];
     nostr_event_message(&ev, msg, sizeof(msg));
     if (id_out && idsz)
         snprintf(id_out, idsz, "%s", ev.id);
@@ -205,7 +205,7 @@ int group_state_publish(SyncState *s, const char *channel,
              mcsv, wcsv);
     if (nostr_sign_event(&ev, s->privkey) != 0)
         return -1;
-    char msg[4200];
+    char msg[NOSTR_MSG_MAX];
     nostr_event_message(&ev, msg, sizeof(msg));
     return sync_send_event(s, msg);
 }
@@ -238,7 +238,7 @@ int group_control_send(SyncState *s, const char *channel,
              name, pubkey);
     if (nostr_sign_event(&ev, s->privkey) != 0)
         return -1;
-    char msg[4200];
+    char msg[NOSTR_MSG_MAX];
     nostr_event_message(&ev, msg, sizeof(msg));
     return sync_send_event(s, msg);
 }
@@ -259,7 +259,7 @@ int profile_announce(SyncState *s, const char *displayname)
     snprintf(ev.content, sizeof(ev.content), "{\"user\":\"%s\"}", displayname);
     if (nostr_sign_event(&ev, s->privkey) != 0)
         return -1;
-    char msg[4200];
+    char msg[NOSTR_MSG_MAX];
     nostr_event_message(&ev, msg, sizeof(msg));
     return sync_send_event(s, msg);
 }

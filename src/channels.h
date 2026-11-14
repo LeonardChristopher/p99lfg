@@ -84,7 +84,7 @@ int channel_parse(const char *evobj_json, char *channel_out, size_t chsz,
  * instead of a silent loss. */
 #define RECON_SEEN_MAX 64      /* per-channel chat ids remembered */
 #define RECON_SPOOL_MAX 16     /* sent-but-unacknowledged messages kept */
-#define RECON_SPOOL_MSG 4200   /* raw ["EVENT",...] buffer size */
+#define RECON_SPOOL_MSG NOSTR_MSG_MAX   /* raw ["EVENT",...] buffer size */
 
 typedef struct {
     /* ids of chat messages this client has seen (received or sent) */

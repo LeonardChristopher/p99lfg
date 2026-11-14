@@ -206,7 +206,7 @@ void rating_store_finalize(RatingStore *s)
         ev.kind = RATING_KIND;
         snprintf(ev.dtag, sizeof(ev.dtag), "%s", r->target);
         snprintf(ev.content, sizeof(ev.content), "%s", r->content);
-        char serial[2048];
+        char serial[NOSTR_SERIAL_MAX];
         nostr_serialize_for_id(&ev, serial, sizeof(serial));
         uint8_t id32[32];
         sha256(serial, strlen(serial), id32);
@@ -253,7 +253,7 @@ int rating_publish(SyncState *s, const char *target_pubkey,
              competent, friendly, listens);
     if (nostr_sign_event(&ev, s->privkey) != 0)
         return -1;
-    char msg[4200];
+    char msg[NOSTR_MSG_MAX];
     nostr_event_message(&ev, msg, sizeof(msg));
     return sync_send_event(s, msg);
 }
@@ -270,7 +270,7 @@ int vote_publish(SyncState *s, const char *rating_id, int agree)
     snprintf(ev.content, sizeof(ev.content), "{\"agree\":%s}", agree ? "true" : "false");
     if (nostr_sign_event(&ev, s->privkey) != 0)
         return -1;
-    char msg[4200];
+    char msg[NOSTR_MSG_MAX];
     nostr_event_message(&ev, msg, sizeof(msg));
     return sync_send_event(s, msg);
 }

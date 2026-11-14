@@ -15,15 +15,23 @@
 /* Canonical tag for all p99lfg events. */
 #define LFG_TAG "p99lfg"
 
+/* Content cap: a full 6-member + 2-wait roster CSV is ~1092 bytes raw and
+ * must never truncate mid-JSON (truncation corrupts the parsed roster).
+ * json_escape expands a control byte to 6 chars (\u00xx), so every buffer
+ * downstream of content (escape, id serialization, EVENT message, outbox)
+ * scales from 6x this and must never truncate: a truncated serialization
+ * yields a wrong event id and the relay rejects the event. */
+#define NOSTR_CONTENT_MAX 2048
+#define NOSTR_ESC_MAX (NOSTR_CONTENT_MAX * 6 + 8)
+#define NOSTR_SERIAL_MAX (NOSTR_ESC_MAX + 512)
+#define NOSTR_MSG_MAX (NOSTR_SERIAL_MAX + 512)
+
 typedef struct {
     char id[NOSTR_EVENT_ID_HEX];
     char pubkey[NOSTR_PUBKEY_HEX];
     uint64_t created_at;
     int kind;
-    /* 2048: a full 6-member + 2-wait roster CSV is ~1092 bytes raw and
-     * must never truncate mid-JSON (truncation corrupts the parsed
-     * roster). Escape buffers scale with it (2x + slack). */
-    char content[2048];
+    char content[NOSTR_CONTENT_MAX];
     char sig[NOSTR_SIG_HEX];
     char dtag[128];
     /* kind-4 DM only: recipient pubkey tag ("p"). Empty for LFG events. */
