@@ -3426,6 +3426,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     else
         strcat(keypath, ".key");
     log_printf("key path: %s\n", keypath);
+    sync_set_ui_nonblocking(1); /* UI thread never blocks on relay I/O */
     sync_init(&g_sync, keypath, g_settings.server[0] ? g_settings.server : "green",
               on_remote_event, NULL);
     snprintf(g_sync.user_name, sizeof(g_sync.user_name), "%s",

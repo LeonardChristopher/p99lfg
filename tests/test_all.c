@@ -359,6 +359,23 @@ static void test_outbox(void)
     CHECK(sync_outbox_pending(&st) == 2, "still queued while relay is down");
 }
 
+/* UI nonblocking mode: publishes spool to the outbox immediately (no
+ * per-relay connect/read attempt on the caller's thread). */
+static void test_ui_nonblocking(void)
+{
+    SyncState st;
+    sync_init(&st, "p99lfg_test_key.txt", "green", remote_cb, NULL);
+    sync_add_relay(&st, "ws://127.0.0.1:1/"); /* connection refused */
+    CHECK(sync_ui_nonblocking() == 0, "nonblocking off by default");
+    sync_set_ui_nonblocking(1);
+    CHECK(sync_ui_nonblocking() == 1, "nonblocking on");
+    const char *ev = "[\"EVENT\",{\"id\":\"spool-nb\"}]";
+    CHECK(sync_send_event(&st, ev) == 0, "ui send returns 0");
+    CHECK(sync_outbox_pending(&st) == 1, "ui send spooled for background flush");
+    sync_set_ui_nonblocking(0);
+    CHECK(sync_ui_nonblocking() == 0, "nonblocking off again");
+}
+
 /* Import the Windows key on a mobile device: same secret, same pubkey. */
 static void test_key_import(void)
 {
@@ -651,6 +668,7 @@ int main(void)
     test_core_parser();
     test_sync_messages();
     test_outbox();
+    test_ui_nonblocking();
     test_recon();
     test_guild_settings();
     test_key_import();

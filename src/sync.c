@@ -156,18 +156,44 @@ int sync_outbox_pending(SyncState *s)
  * idempotent: relays ignore duplicate event ids. Returns 0 when the
  * message is either published or durably queued; -1 only when it could
  * not even be queued (oversized). */
-int sync_send_event(SyncState *s, const char *msg)
+static int g_ui_nonblocking;
+
+void sync_set_ui_nonblocking(int on)
 {
-    if (sync_send_event_now(s, msg) == 0)
-        return 0;
+    g_ui_nonblocking = on;
+}
+
+int sync_ui_nonblocking(void)
+{
+    return g_ui_nonblocking;
+}
+
+int sync_queue_event(SyncState *s, const char *msg)
+{
     if (strlen(msg) >= SYNC_OUTBOX_MSG)
         return -1;
     snprintf(s->outbox[s->outbox_next], SYNC_OUTBOX_MSG, "%s", msg);
     s->outbox_next = (s->outbox_next + 1) % SYNC_OUTBOX_MAX;
     if (s->outbox_n < SYNC_OUTBOX_MAX)
         s->outbox_n++;
-    ws_log_public("outbox: all relays failed; queued for retry (%d pending)",
+    ws_log_public("outbox: queued for background send (%d pending)",
                   s->outbox_n);
+    return 0;
+}
+
+int sync_send_event(SyncState *s, const char *msg)
+{
+    /* UI thread: never block on relay connect/read timeouts - spool and
+     * let the sync thread flush. Background threads keep the immediate
+     * attempt + spool-on-failure behavior. */
+    if (!g_ui_nonblocking && sync_send_event_now(s, msg) == 0)
+        return 0;
+    int rc = sync_queue_event(s, msg);
+    if (rc != 0)
+        return -1;
+    if (!g_ui_nonblocking)
+        ws_log_public("outbox: all relays failed; queued for retry (%d pending)",
+                      s->outbox_n);
     return 0;
 }
 
