@@ -96,10 +96,13 @@ tree/election machinery.
   the group channel ("I'm in voice, my public IP/port, my Nostr key").
   Members exchange SDP-lite info (just IP:port + Opus params) via DM.
 - **NAT:** try direct UDP; if hole-punch fails (common on consumer NAT),
-  fall back to a relay candidate — the one group member with the best
-  uplink (self-reported `up_kbps` in presence, ties broken by lowest
-  pubkey) volunteers as pass-through for the failed pair. Pull-based:
-  both ends dial the relay.
+  fall back to a relay candidate. IMPLEMENTED (src/voice.c): keepalive
+  pings measure per-peer RTT (ping/pong), and a peer silent for >10s
+  despite pings is reached via the reachable peer with the lowest
+  measured RTT (ties: lowest pubkey). Relayed packets ("P9VR" magic)
+  carry the dest pubkey in the header and are forwarded opaquely; the
+  payload stays encrypted with the destination pairwise key, so the
+  relay never sees plaintext.
 - **UI:** a "Voice" button in the Group tab; speaking indicator dots;
   in v1 no mute/deafen niceties beyond a mute toggle.
 

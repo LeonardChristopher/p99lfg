@@ -608,3 +608,33 @@ Known rough edges to consider: group window layout is fixed-position;
 waitlist has no UI for the leader to promote manually (auto-promotes on
 leave only); `g_pending_popup` is a single slot (two popups in the same
 poll cycle overwrite each other - acceptable).
+
+---
+
+## 11. Internet voice: NAT fallback + latency-elected relay (branch vibe/voice-nat-relay-275368)
+
+User picked this from the backlog (Windows program focus; web/extension/iOS paused).
+
+- [x] RTT probing: voice_ping now sends sentinel+id (6B); voice_poll answers
+      with a pong (never delivered as audio) and the pinger records
+      peer->rtt_ms. voice_now_ms() = monotonic ms (GetTickCount64 /
+      CLOCK_MONOTONIC).
+- [x] Relay fallback: peer silent > relay_after_ms (default 10s,
+      VOICE_RELAY_AFTER_MS; 0 disables) despite pings -> voice_send_frame
+      routes via voice_relay_for() = reachable peer with lowest rtt_ms
+      (ties: lowest pubkey). Relayed packets use magic "P9VR" + dest pubkey
+      (64 hex) in the header; payload still encrypted with the DEST
+      pairwise key, so the relay forwards opaquely and the dest decrypts
+      normally. Direct packets unchanged ("P9VG"), old clients drop P9VR.
+- [x] Attribution fix required by relaying: fast-path address match whose
+      decrypt fails now falls through to the crypto-attribution loop;
+      address learning only happens on direct (P9VG) packets, never from
+      a relay's address.
+- [x] GUI: voice thread logs "relaying via X (rtt N ms)" / "direct again"
+      transitions into the group log (staged under g_voice_lock, appended
+      after unlock to keep lock order).
+- [x] nostr_pubkey_from_privkey() helper added (src/nostr.[ch]).
+- [x] Tests (tests/test_voice.c, loopback): ping/pong RTT, relay election
+      picks lowest-rtt direct peer, relayed frame forwarded by B without
+      hitting B's audio cb, C receives it attributed to A byte-identical,
+      path recovers to direct. ./build.sh ALL TESTS PASSED (0 failures).

@@ -1,0 +1,14 @@
+/workspace/github__LeonardChristopher__p99lfg/web/core/target/debug/deps/serde-61bcfad07f3d149f.d: /home/appuser/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /home/appuser/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /home/appuser/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /home/appuser/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /home/appuser/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /workspace/github__LeonardChristopher__p99lfg/web/core/target/debug/build/serde-ba8426c877a92a17/out/private.rs
+
+/workspace/github__LeonardChristopher__p99lfg/web/core/target/debug/deps/libserde-61bcfad07f3d149f.rlib: /home/appuser/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /home/appuser/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /home/appuser/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /home/appuser/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /home/appuser/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /workspace/github__LeonardChristopher__p99lfg/web/core/target/debug/build/serde-ba8426c877a92a17/out/private.rs
+
+/workspace/github__LeonardChristopher__p99lfg/web/core/target/debug/deps/libserde-61bcfad07f3d149f.rmeta: /home/appuser/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /home/appuser/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /home/appuser/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /home/appuser/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /home/appuser/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /workspace/github__LeonardChristopher__p99lfg/web/core/target/debug/build/serde-ba8426c877a92a17/out/private.rs
+
+/home/appuser/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs:
+/home/appuser/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs:
+/home/appuser/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs:
+/home/appuser/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs:
+/home/appuser/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs:
+/workspace/github__LeonardChristopher__p99lfg/web/core/target/debug/build/serde-ba8426c877a92a17/out/private.rs:
+
+# env-dep:OUT_DIR=/workspace/github__LeonardChristopher__p99lfg/web/core/target/debug/build/serde-ba8426c877a92a17/out

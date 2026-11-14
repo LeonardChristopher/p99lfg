@@ -244,6 +244,62 @@ int main(void)
         vcodec_close(&vc);
     }
 
+    /* RTT probe: ping -> automatic pong -> measured rtt on the pinger */
+    {
+        VoicePeer *ab = NULL;
+        for (int i = 0; i < a.npeers; i++)
+            if (strcmp(a.peers[i].pubkey, b_pk) == 0)
+                ab = &a.peers[i];
+        CHECK(ab && ab->rtt_ms == VOICE_RTT_UNKNOWN, "rtt unknown before ping");
+        CHECK(voice_ping(&a, b_pk, a_sk) == 0, "A pings B");
+        voice_poll(&b, b_sk, frame_cb, NULL); /* B answers pong internally */
+        int gotp = voice_poll(&a, a_sk, frame_cb, NULL);
+        CHECK(gotp == 0, "pong is control traffic, not delivered as audio");
+        CHECK(ab->rtt_ms != VOICE_RTT_UNKNOWN, "rtt measured after pong");
+    }
+
+    /* relay election + forwarding: A cannot reach C directly (bogus
+     * address, stale), B is direct -> A's traffic to C goes via B, B
+     * forwards without decrypting, C still receives it attributed to A */
+    {
+        CHECK(voice_peer_register(&a, c_pk, "127.0.0.1", 9) == 0,
+              "A registers C with an unreachable address");
+        CHECK(voice_peer_register(&b, c_pk, "127.0.0.1", c.port) == 0,
+              "B registers C's real address");
+        CHECK(voice_peer_register(&c, a_pk, "127.0.0.1", a.port) == 0,
+              "C registers A's real address");
+        a.relay_after_ms = 1; /* tests: staleness threshold ~immediate */
+        VoicePeer *ac = NULL;
+        for (int i = 0; i < a.npeers; i++)
+            if (strcmp(a.peers[i].pubkey, c_pk) == 0)
+                ac = &a.peers[i];
+        CHECK(ac != NULL, "A has C as peer");
+        ac->last_heard_ms = voice_now_ms() - 100000; /* silent for ages */
+        CHECK(strcmp(voice_relay_for(&a, c_pk), b_pk) == 0,
+              "relay election picks the direct peer (lowest rtt)");
+        CHECK(voice_update_paths(&a) >= 1, "update_paths flips a peer to relayed");
+        CHECK(ac->relayed == 1, "C marked relayed on A");
+
+        uint8_t f2[64];
+        for (int i = 0; i < 64; i++)
+            f2[i] = (uint8_t)(i * 7 + 3);
+        int bframes = g_frames;
+        CHECK(voice_send_frame(&a, c_pk, a_sk, f2, sizeof(f2), 777) == 0,
+              "A sends frame to C (via relay)");
+        CHECK(voice_poll(&b, b_sk, frame_cb, NULL) == 0 && g_frames == bframes,
+              "relay B forwards without delivering to its own audio cb");
+        int gotc = voice_poll(&c, c_sk, frame_cb, NULL);
+        CHECK(gotc == 1, "C receives the relayed frame");
+        CHECK(strcmp(g_last_sender, a_pk) == 0, "relayed frame attributed to A");
+        CHECK(g_last_len == sizeof(f2) && g_last_stamp == 777 &&
+              memcmp(g_last_frame, f2, sizeof(f2)) == 0,
+              "relayed payload decrypts byte-identical at C");
+
+        ac->last_heard_ms = voice_now_ms(); /* C reachable again */
+        CHECK(voice_update_paths(&a) >= 1 && ac->relayed == 0,
+              "path recovers to direct when C is heard from");
+    }
+
     /* flush: peers forgotten, count reset */
     CHECK(a.npeers > 0, "peers present before flush");
     voice_flush(&a);
