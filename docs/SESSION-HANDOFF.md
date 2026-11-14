@@ -608,3 +608,31 @@ Known rough edges to consider: group window layout is fixed-position;
 waitlist has no UI for the leader to promote manually (auto-promotes on
 leave only); `g_pending_popup` is a single slot (two popups in the same
 poll cycle overwrite each other - acceptable).
+
+---
+
+## 12. UI freeze on publish (branch vibe/ui-nonblocking-publish-275368)
+
+User report: "freezing at Create a new group" on the PR #4 build.
+Root cause: UI-thread handlers (on_group_create -> group_state_publish,
+invites, chat/LFG/rating sends) call sync_send_event /
+chat_send_message_from, which do a BLOCKING per-relay connect+read on the
+caller's thread; with slow/dead relays the UI thread hangs for the sum of
+all relay timeouts. (Group/chat logic itself verified intact: the
+test_group_flow harness passes end-to-end; the branch diff does not touch
+channels.c/sync.c receive paths.)
+
+- [x] sync.c: sync_set_ui_nonblocking()/sync_ui_nonblocking()/
+      sync_queue_event() (spool-only). sync_send_event skips the immediate
+      relay attempt in UI mode and queues to the outbox; the background
+      sync thread flushes it on its poll (<=5s; connectivity strip shows
+      pending). Tests leave the mode off (default), so their semantics are
+      unchanged.
+- [x] chat.c chat_send_message_from: in UI mode, spool the EVENT message
+      instead of the per-relay blocking verdict loop.
+- [x] win32_main.c: sync_set_ui_nonblocking(1) right after sync_init.
+- [x] Test test_ui_nonblocking in test_all.c. ./build.sh ALL TESTS PASSED
+      (0 failures) x5 suites. (One test_voice loopback run flaked under
+      parallel build load - "unknown source datagram" UDP timing; passes
+      5/5 standalone and on full reruns.)
+- NOTE: voice relay work is on branch vibe/voice-nat-relay-275368 (PR #4).
