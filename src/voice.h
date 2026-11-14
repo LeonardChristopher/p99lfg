@@ -17,9 +17,17 @@
 #include "sync.h"
 
 #define VOICE_MAGIC 0x50395647 /* "P9VG" */
+#define VOICE_MAGIC_RELAY 0x50395652 /* "P9VR": relayed (forwarded) packet */
 #define VOICE_FRAME_MAX 512    /* 20ms of Opus at 16-24kbps fits easily */
 #define VOICE_PORT_DEFAULT 0  /* bind ephemeral, advertise the real one */
 #define VOICE_PEERS_MAX 6     /* one group */
+#define VOICE_RELAY_AFTER_MS 10000 /* silent this long despite pings -> relay */
+#define VOICE_RTT_UNKNOWN 0xFFFFFFFFu
+
+/* ping/pong payload sentinels (inside the encrypted frame body) */
+#define VOICE_PING0 0xff
+#define VOICE_PING1 0xfe
+#define VOICE_PONG1 0xfd
 
 typedef struct {
     uint32_t magic;      /* VOICE_MAGIC */
@@ -35,6 +43,11 @@ typedef struct {
     int  port;                     /* their advertised UDP port */
     uint32_t last_seq;             /* dedup: highest seq seen */
     int  active;
+    uint32_t rtt_ms;          /* last measured ping RTT (VOICE_RTT_UNKNOWN) */
+    uint32_t last_heard_ms;   /* last valid frame/ping/pong from them */
+    uint32_t ping_sent_ms;    /* when we last pinged them */
+    uint32_t ping_id;         /* outstanding ping id */
+    int  relayed;             /* currently reached via a relay peer */
 } VoicePeer;
 
 typedef struct {
@@ -42,6 +55,7 @@ typedef struct {
     int port;                     /* bound port (for advertising) */
     VoicePeer peers[VOICE_PEERS_MAX];
     int npeers;
+    uint32_t relay_after_ms;      /* staleness threshold; 0 disables relaying */
 } VoiceState;
 
 void voice_init(VoiceState *v);
@@ -76,8 +90,20 @@ int voice_presence_publish_ip(SyncState *s, const char *channel,
                                const char *my_ip);
 
 /* Send a greeting/keepalive frame to a peer (NAT punch + address
- * learning). Returns 0 on success. */
+ * learning + RTT probe). Returns 0 on success. */
 int voice_ping(VoiceState *v, const char *peer_pubkey, const char *my_privkey);
+
+/* Monotonic clock in ms (for RTT and staleness). */
+uint32_t voice_now_ms(void);
+
+/* Relay election: among directly-reachable peers (excluding dest), the
+ * one with the lowest measured RTT (ties: lowest pubkey). Returns the
+ * relay's pubkey, or NULL if no candidate. */
+const char *voice_relay_for(VoiceState *v, const char *dest_pubkey);
+
+/* Recompute every peer's relayed flag from current reachability.
+ * Returns how many peers changed state. */
+int voice_update_paths(VoiceState *v);
 
 /* Forget all peers (voice off / leaving a group / manual flush). */
 void voice_flush(VoiceState *v);

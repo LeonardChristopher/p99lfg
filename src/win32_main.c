@@ -1017,14 +1017,42 @@ static DWORD WINAPI voice_thread(LPVOID arg)
         static int ping_tick;
         if (g_voice_on) {
             voice_poll(&g_voice, g_sync.privkey, voice_frame_cb, NULL);
-            if (++ping_tick >= 250) { /* ~5s keepalive */
+            if (++ping_tick >= 250) { /* ~5s keepalive + path check */
                 ping_tick = 0;
+                char pathlog[512] = "";
                 EnterCriticalSection(&g_voice_lock);
                 for (int i = 0; i < g_voice.npeers; i++)
                     if (g_voice.peers[i].active)
                         voice_ping(&g_voice, g_voice.peers[i].pubkey,
                                    g_sync.privkey);
+                if (voice_update_paths(&g_voice) > 0) {
+                    static int prev_relayed[VOICE_PEERS_MAX];
+                    for (int i = 0; i < g_voice.npeers && i < VOICE_PEERS_MAX; i++) {
+                        VoicePeer *p = &g_voice.peers[i];
+                        if (!p->active || prev_relayed[i] == p->relayed)
+                            continue;
+                        prev_relayed[i] = p->relayed;
+                        uint32_t rtt = p->rtt_ms == VOICE_RTT_UNKNOWN ? 0 : p->rtt_ms;
+                        char line[256];
+                        if (p->relayed) {
+                            const char *r = voice_relay_for(&g_voice, p->pubkey);
+                            snprintf(line, sizeof(line),
+                                     "voice: %.12s... unreachable directly, relaying via %.12s... (rtt %ums)\r\n",
+                                     p->pubkey, r ? r : "?", rtt);
+                        } else {
+                            snprintf(line, sizeof(line),
+                                     "voice: %.12s... direct again (rtt %ums)\r\n",
+                                     p->pubkey, rtt);
+                        }
+                        strncat(pathlog, line, sizeof(pathlog) - strlen(pathlog) - 1);
+                    }
+                }
                 LeaveCriticalSection(&g_voice_lock);
+                if (pathlog[0]) {
+                    group_log_append(pathlog);
+                    if (g_hwnd)
+                        PostMessageA(g_hwnd, WM_GROUPREFRESH, 0, 0);
+                }
             }
             if (g_settings.voice_ptt) {
                 if (g_settings.voice_ptt_mouse)
