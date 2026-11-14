@@ -608,3 +608,61 @@ Known rough edges to consider: group window layout is fixed-position;
 waitlist has no UI for the leader to promote manually (auto-promotes on
 leave only); `g_pending_popup` is a single slot (two popups in the same
 poll cycle overwrite each other - acceptable).
+
+---
+
+## 9. Browser webpage port (IN FLIGHT - branch vibe/web-core-wasm-275368)
+
+Resumed from a dead "Convert to browser webpage" chat session (plan was
+pasted back by the user, Oct 2026; zero code had been written).
+
+DECISIONS (user-approved):
+- Stack: **Rust core compiled to WASM + thin JS shell** (user picked this over
+  TS/JS specifically for robust encryption: audited RustCrypto crates
+  k256 / aes+cbc / sha2, memory-safe, cargo test). C is NOT abandoned -
+  src/ stays the reference implementation; web + extension are additional
+  shells on the same wire protocol and the same key file.
+- Key format interop: `p99lfg.key` = 64-char hex secp256k1 secret key
+  (see nostr_identity_load / nostr_import_key, src/nostr.c). Web/extension
+  read/write the same hex.
+- Build order: (1) shared core `web/core` (THIS ROUND), (2) single-file
+  `web/p99lfg.html` (esbuild bundle), (3) browser extension (popup + service
+  worker), (4) app lock = passphrase + TOTP QR for password managers -
+  PARKED near the end per user.
+- Cut lines v1: no log scan (impossible in a browser), no voice (WebRTC
+  later).
+- Core must transliterate the C byte-for-byte where it matters:
+  - NIP-04 DMs: ECDH shared key = raw x-coord of secp256k1 ECDH (even-y lift
+    of peer xonly), AES-256-CBC, PKCS#7 always-pad, content
+    `<b64 ct>?iv=<b64 iv>` (src/chat.c)
+  - Event id serialization + BIP340 schnorr sig over sha256(id-serial) with
+    aux=32 zero bytes (src/nostr.c nostr_serialize_for_id / nostr_sign_event);
+    kind-4 uses tags [["p",peer],["t","p99lfg"]], others [["d",dtag],["t","p99lfg"]]
+  - REQ: `["REQ",sub,{"kinds":[30078,4,9,30079,30080,30081,30082],"#t":["p99lfg"]}]`
+    (+ `"since":N` variant)
+  - LFG kind 30078, d=`<server>/<charname>`, content v2
+    `{"v":2,"name":..,"class":..,"level":N,"zone":..,"lfg":bool,"user":..}`
+    (v1 `{"v":1,"name","zone","detail","lfg"}` still parsed)
+  - Ratings kind 30079 (d=target pubkey, content
+    `{"competent":1-5,"friendly":1-5,"listens":1-5}`) + kind 30080 votes
+    (d=rating event id, `{"agree":bool}`); consensus hiding: rating hidden
+    when >= RATING_HIDE_DISAGREES(2) distinct ACTIVE raters disagree
+  - Dedup: only append-style kinds (9,4,30079,30080) are deduped by event id;
+    state kinds (30078,30081,30082) are latest-wins re-delivered
+- Cross-check vectors are generated from the actual C code (harness linking
+  src/nostr.c + src/chat.c + vendored libsecp256k1) and embedded in
+  web/core tests: pubkey of p99lfg_test_key.txt, id+sig of a fixed event,
+  NIP-04 shared key + encrypted blob for a fixed peer/plaintext.
+
+STOPPING POINT (update after each unit):
+- [x] Plan captured here; branch vibe/web-core-wasm-275368 created
+- [x] web/core Rust crate DONE: keys / event / nip04 / lfg / rating + extern "C"
+      wasm ABI (src/ffi.rs). cargo test: 12/12 green, incl. byte-exact C
+      cross-vectors (event id+sig+message, REQ strings, NIP-04 shared key +
+      C-encrypted blob, BIP340 v0, FIPS-197 AES-256). Rust->C direction also
+      verified manually (C harness decrypts a Rust-encrypted DM blob).
+      wasm32-unknown-unknown release build green (~870KB wasm, lto+z+panic=abort).
+- [x] CI workflow .github/workflows/build-web.yml (cargo test + wasm build)
+- [x] web/build-core.sh, web/README.md, Cargo.lock committed
+- [ ] NEXT PHASE: web/p99lfg.html single-file page (esbuild bundle of thin JS
+      glue over p99lfg_core.wasm), then extension, then app lock (parked)
