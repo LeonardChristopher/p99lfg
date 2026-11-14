@@ -1,6 +1,7 @@
 build/
 vendor/secp256k1/build/
 vendor/secp256k1/build-mingw/
+web/core/target/
 *.o
 *.a
 *.exe

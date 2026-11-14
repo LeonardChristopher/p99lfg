@@ -1,0 +1,22 @@
+name: build-web
+
+on:
+  push:
+    branches: [main]
+    paths: ["web/**", ".github/workflows/build-web.yml"]
+  pull_request:
+    paths: ["web/**", ".github/workflows/build-web.yml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Test core (host)
+        run: cd web/core && cargo test
+      - name: Build core to WASM
+        run: cd web/core && cargo build --release --target wasm32-unknown-unknown
