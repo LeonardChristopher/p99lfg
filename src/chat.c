@@ -299,6 +299,9 @@ int chat_send_message_from(SyncState *s, const char *peer_pubkey_hex,
         return -1;
     char msg[4200];
     nostr_event_message(&ev, msg, sizeof(msg));
+    /* UI thread: spool instead of blocking on per-relay reads */
+    if (sync_ui_nonblocking())
+        return sync_queue_event(s, msg);
     int ok = 0;
     for (int i = 0; i < s->nrelays; i++) {
         if (!s->relays[i].enabled)

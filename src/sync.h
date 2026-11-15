@@ -114,6 +114,15 @@ int sync_handle_message(SyncState *s, const char *msg);
  * sync_poll flushes the outbox. */
 int sync_send_event(SyncState *s, const char *msg);
 
+/* UI-thread mode: publishes spool to the outbox immediately instead of
+ * blocking the caller on per-relay connect/read timeouts; the background
+ * sync thread flushes the outbox on its poll. Enabled by the app at
+ * startup; tests leave it off. */
+void sync_set_ui_nonblocking(int on);
+int sync_ui_nonblocking(void);
+/* Spool only (no immediate relay attempt). Returns 0 if queued. */
+int sync_queue_event(SyncState *s, const char *msg);
+
 /* Number of events still waiting in the outbox for a relay to accept. */
 int sync_outbox_pending(SyncState *s);
 
