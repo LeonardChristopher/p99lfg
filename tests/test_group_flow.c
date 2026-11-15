@@ -33,6 +33,15 @@
 static int fails = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); fails++; } else printf("ok: %s\n", msg); } while (0)
 
+static SyncRemoteEntry g_lfg_last;
+static int g_lfg_calls;
+static void lfg_cb(const SyncRemoteEntry *e, const char *pk, void *ud)
+{
+    (void)pk; (void)ud;
+    g_lfg_last = *e;
+    g_lfg_calls++;
+}
+
 /* ---- fake relay: stores events, replays on REQ ---- */
 #define STORE_MAX 256
 static char g_store[STORE_MAX][4200];
@@ -455,6 +464,28 @@ int main(void)
         snprintf(rcpt, sizeof(rcpt), "{\"rcpt\":\"%s\",\"v\":1}", ev_id);
         CHECK(recon_on_message(&recon_l, rcpt) == 1 && recon_l.spool_n == 0,
               "sender spool pruned on acknowledgement");
+    }
+
+    /* LFG char publish in UI-nonblocking mode (the PR #5 app path):
+     * spools without a relay attempt, flushes on the sync thread's poll,
+     * and the other instance receives the kind-30078 and parses the entry */
+    {
+        static SyncRemoteEntry last_remote;
+        g_lfg_calls = 0;
+        g_lfg_last = (SyncRemoteEntry){0};
+        invitee.on_event = lfg_cb;
+        sync_set_ui_nonblocking(1);
+        CHECK(sync_publish_char(&leader, "Pacos", "Mage", 60, "", 1) == 0,
+              "ui-mode lfg publish returns 0");
+        CHECK(sync_outbox_pending(&leader) == 1,
+              "ui-mode publish spooled, not yet sent");
+        sync_poll(&leader);
+        CHECK(sync_outbox_pending(&leader) == 0, "outbox flushed on poll");
+        sync_poll(&invitee);
+        CHECK(g_lfg_calls >= 1 && strcmp(g_lfg_last.name, "Pacos") == 0 &&
+              g_lfg_last.lfg && g_lfg_last.level == 60,
+              "invitee received kind-30078 LFG entry for Pacos");
+        sync_set_ui_nonblocking(0);
     }
 
     pthread_cancel(rt);
