@@ -231,26 +231,9 @@ int sync_publish(SyncState *s, const char *content_json)
 
     char msg[2048];
     nostr_event_message(&ev, msg, sizeof(msg));
-
-    int ok = 0;
-    for (int i = 0; i < s->nrelays; i++) {
-        if (!s->relays[i].enabled)
-            continue;
-        WsUrl u;
-        if (ws_parse_url(s->relays[i].url, &u) != 0)
-            continue;
-        WsConn c;
-        if (ws_connect(&c, &u) != 0)
-            continue;
-        s->relays[i].connected = 1;
-        if (ws_send_text(&c, msg) == 0) {
-            char resp[512];
-            ws_recv_text(&c, resp, sizeof(resp));
-            ok++;
-        }
-        ws_close(&c);
-    }
-    return ok > 0 ? 0 : -1;
+    /* route through sync_send_event: UI mode spools instead of blocking,
+     * and failure spools to the outbox for retry instead of dropping */
+    return sync_send_event(s, msg);
 }
 
 int sync_handle_message(SyncState *s, const char *msg)
