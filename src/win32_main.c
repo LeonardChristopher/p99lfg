@@ -57,6 +57,49 @@ static char g_keypath[LFG_PATH_MAX];
 static HWND g_char_list;
 static Settings g_settings;
 static char g_inipath[LFG_PATH_MAX];
+
+/* ---- dark theme: near-black background with light, easy-read text ----
+ * Applied live to every app window via WM_ERASEBKGND + WM_CTLCOLOR* in
+ * each wndproc (dark_erasebkgnd / dark_ctlcolor below), so the Dark mode
+ * button takes effect immediately, no restart. The QR window is
+ * deliberately left white with black modules - scanners need the
+ * contrast. System-owned dialogs (MessageBox, file picker) cannot be
+ * themed from here. */
+static HBRUSH g_dark_brush;
+static HBRUSH dark_brush(void)
+{
+    if (!g_dark_brush)
+        g_dark_brush = CreateSolidBrush(RGB(24, 24, 28));
+    return g_dark_brush;
+}
+/* WM_CTLCOLOR* helper: in dark mode set light text on the dark background
+ * and return the background brush; returns 0 in light mode so the caller
+ * falls through to the default system colors. */
+static LRESULT dark_ctlcolor(HDC dc)
+{
+    if (!g_settings.dark_mode)
+        return 0;
+    SetTextColor(dc, RGB(230, 230, 232));
+    SetBkColor(dc, RGB(24, 24, 28));
+    return (LRESULT)dark_brush();
+}
+/* WM_ERASEBKGND helper: fill the client area with the dark brush in dark
+ * mode. Returns 1 when handled, 0 to let the default background through. */
+static int dark_erasebkgnd(HWND w, HDC dc)
+{
+    if (!g_settings.dark_mode)
+        return 0;
+    RECT rc;
+    GetClientRect(w, &rc);
+    FillRect(dc, &rc, dark_brush());
+    return 1;
+}
+/* force every window and child control to repaint (dark-mode toggle) */
+static void redraw_all_windows(void)
+{
+    RedrawWindow(NULL, NULL, NULL,
+                 RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_ERASE);
+}
 static HWND g_group_log, g_group_input, g_group_channel, g_group_roster;
 static HWND g_group_wnd;
 static char g_conn_text[128]; /* staged by the sync thread */
@@ -1482,6 +1525,14 @@ static LRESULT CALLBACK rate_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         DestroyWindow(dlg);
         return 0;
     }
+    if (msg == WM_ERASEBKGND && dark_erasebkgnd(dlg, (HDC)wp))
+        return 1;
+    if (msg == WM_CTLCOLORSTATIC || msg == WM_CTLCOLORLISTBOX ||
+        msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORBUTTON) {
+        LRESULT dk = dark_ctlcolor((HDC)wp);
+        if (dk)
+            return dk;
+    }
     return DefWindowProcA(dlg, msg, wp, lp);
 }
 
@@ -1607,6 +1658,14 @@ static LRESULT CALLBACK chat_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
     }
     if (msg == WM_DMARRIVED)
         chat_refresh();
+    if (msg == WM_ERASEBKGND && dark_erasebkgnd(dlg, (HDC)wp))
+        return 1;
+    if (msg == WM_CTLCOLORSTATIC || msg == WM_CTLCOLORLISTBOX ||
+        msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORBUTTON) {
+        LRESULT dk = dark_ctlcolor((HDC)wp);
+        if (dk)
+            return dk;
+    }
     return DefWindowProcA(dlg, msg, wp, lp);
 }
 
@@ -2020,6 +2079,14 @@ static LRESULT CALLBACK vt_wnd_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
         KillTimer(w, 1);
         g_vt_looping = 0;
     }
+    if (msg == WM_ERASEBKGND && dark_erasebkgnd(w, (HDC)wp))
+        return 1;
+    if (msg == WM_CTLCOLORSTATIC || msg == WM_CTLCOLORLISTBOX ||
+        msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORBUTTON) {
+        LRESULT dk = dark_ctlcolor((HDC)wp);
+        if (dk)
+            return dk;
+    }
     return DefWindowProcA(w, msg, wp, lp);
 }
 
@@ -2159,6 +2226,14 @@ static LRESULT CALLBACK vo_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             DestroyWindow(dlg);
             return 0;
         }
+    }
+    if (msg == WM_ERASEBKGND && dark_erasebkgnd(dlg, (HDC)wp))
+        return 1;
+    if (msg == WM_CTLCOLORSTATIC || msg == WM_CTLCOLORLISTBOX ||
+        msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORBUTTON) {
+        LRESULT dk = dark_ctlcolor((HDC)wp);
+        if (dk)
+            return dk;
     }
     return DefWindowProcA(dlg, msg, wp, lp);
 }
@@ -2399,23 +2474,34 @@ static LRESULT CALLBACK group_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         }
         return 0;
     }
-    if (msg == WM_CTLCOLORSTATIC) {
-        /* mic indicator: red while transmitting, normal otherwise */
-        if ((HWND)lp == g_voice_indicator) {
-            HDC dc = (HDC)wp;
-            SetBkMode(dc, OPAQUE);
-            if (g_mic_live) {
-                SetBkColor(dc, RGB(200, 40, 40));
-                SetTextColor(dc, RGB(255, 255, 255));
-            } else {
-                SetBkColor(dc, RGB(230, 230, 230));
-                SetTextColor(dc, RGB(60, 60, 60));
-            }
-            static HBRUSH live_br, idle_br;
+    if (msg == WM_ERASEBKGND && dark_erasebkgnd(dlg, (HDC)wp))
+        return 1;
+    if (msg == WM_CTLCOLORSTATIC && (HWND)lp == g_voice_indicator) {
+        /* mic indicator: red while transmitting, dark when idle in dark
+         * mode, normal light-gray otherwise */
+        HDC dc = (HDC)wp;
+        SetBkMode(dc, OPAQUE);
+        if (g_mic_live) {
+            SetBkColor(dc, RGB(200, 40, 40));
+            SetTextColor(dc, RGB(255, 255, 255));
+            static HBRUSH live_br;
             if (!live_br) live_br = CreateSolidBrush(RGB(200, 40, 40));
-            if (!idle_br) idle_br = CreateSolidBrush(RGB(230, 230, 230));
-            return (LRESULT)(g_mic_live ? live_br : idle_br);
+            return (LRESULT)live_br;
         }
+        LRESULT dk = dark_ctlcolor(dc);
+        if (dk)
+            return dk;
+        SetBkColor(dc, RGB(230, 230, 230));
+        SetTextColor(dc, RGB(60, 60, 60));
+        static HBRUSH idle_br;
+        if (!idle_br) idle_br = CreateSolidBrush(RGB(230, 230, 230));
+        return (LRESULT)idle_br;
+    }
+    if (msg == WM_CTLCOLORSTATIC || msg == WM_CTLCOLORLISTBOX ||
+        msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORBUTTON) {
+        LRESULT dk = dark_ctlcolor((HDC)wp);
+        if (dk)
+            return dk;
     }
     if (msg == WM_COMMAND && LOWORD(wp) == ID_GROUP_SEND)
         { on_group_send(dlg); return 0; }
@@ -2920,6 +3006,14 @@ static LRESULT CALLBACK hist_wnd_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
             fav_toggle(g_favs, name);
         return 0;
     }
+    if (msg == WM_ERASEBKGND && dark_erasebkgnd(w, (HDC)wp))
+        return 1;
+    if (msg == WM_CTLCOLORSTATIC || msg == WM_CTLCOLORLISTBOX ||
+        msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORBUTTON) {
+        LRESULT dk = dark_ctlcolor((HDC)wp);
+        if (dk)
+            return dk;
+    }
     return DefWindowProcA(w, msg, wp, lp);
 }
 
@@ -2935,6 +3029,14 @@ static LRESULT CALLBACK name_wnd_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
         profile_announce(&g_sync, nm);
         DestroyWindow(w);
         return 0;
+    }
+    if (msg == WM_ERASEBKGND && dark_erasebkgnd(w, (HDC)wp))
+        return 1;
+    if (msg == WM_CTLCOLORSTATIC || msg == WM_CTLCOLORLISTBOX ||
+        msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORBUTTON) {
+        LRESULT dk = dark_ctlcolor((HDC)wp);
+        if (dk)
+            return dk;
     }
     return DefWindowProcA(w, msg, wp, lp);
 }
@@ -3004,18 +3106,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (g_status)
             SetWindowTextA(g_status, g_conn_text);
         return 0;
+    case WM_ERASEBKGND:
+        if (dark_erasebkgnd(hwnd, (HDC)wp))
+            return 1;
+        break;
     case WM_CTLCOLORSTATIC:
-    case WM_CTLCOLORLISTBOX: {
-        /* dark mode: light text on dark controls */
-        HDC dc = (HDC)wp;
-        if (g_settings.dark_mode) {
-            SetTextColor(dc, RGB(230, 230, 230));
-            SetBkColor(dc, RGB(24, 24, 28));
-            static HBRUSH dk = NULL;
-            if (!dk)
-                dk = CreateSolidBrush(RGB(24, 24, 28));
-            return (LRESULT)dk;
-        }
+    case WM_CTLCOLORLISTBOX:
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORBUTTON: {
+        /* dark mode: light text on dark controls (all control types) */
+        LRESULT dk = dark_ctlcolor((HDC)wp);
+        if (dk)
+            return dk;
         break;
     }
     case WM_MICUPDATE: {
@@ -3232,9 +3334,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case ID_BTN_DARK:
             g_settings.dark_mode = !g_settings.dark_mode;
             settings_save(&g_settings, g_inipath);
-            InvalidateRect(hwnd, NULL, TRUE);
-            MessageBoxA(hwnd, "Dark mode toggled. Restart the app for the\n"
-                        "full effect (control backgrounds refresh on start).",
+            redraw_all_windows(); /* repaint every window + control now */
+            MessageBoxA(hwnd, g_settings.dark_mode
+                        ? "Dark mode ON: near-black background with light text,\n"
+                          "applied to all app windows."
+                        : "Dark mode OFF: back to the default light theme.",
                         "p99lfg", MB_ICONINFORMATION);
             return 0;
         case ID_BTN_QR: on_show_qr(); return 0;
@@ -3480,7 +3584,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
     wc.hbrBackground = g_settings.dark_mode
-                       ? (HBRUSH)GetStockObject(BLACK_BRUSH)
+                       ? dark_brush()
                        : (HBRUSH)(COLOR_BTNFACE + 1);
     wc.lpszClassName = "p99lfg";
     RegisterClassA(&wc);
