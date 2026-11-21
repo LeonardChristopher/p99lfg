@@ -1528,7 +1528,7 @@ static LRESULT CALLBACK rate_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
     if (msg == WM_ERASEBKGND && dark_erasebkgnd(dlg, (HDC)wp))
         return 1;
     if (msg == WM_CTLCOLORSTATIC || msg == WM_CTLCOLORLISTBOX ||
-        msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORBUTTON) {
+        msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORBTN) {
         LRESULT dk = dark_ctlcolor((HDC)wp);
         if (dk)
             return dk;
@@ -1661,7 +1661,7 @@ static LRESULT CALLBACK chat_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
     if (msg == WM_ERASEBKGND && dark_erasebkgnd(dlg, (HDC)wp))
         return 1;
     if (msg == WM_CTLCOLORSTATIC || msg == WM_CTLCOLORLISTBOX ||
-        msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORBUTTON) {
+        msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORBTN) {
         LRESULT dk = dark_ctlcolor((HDC)wp);
         if (dk)
             return dk;
@@ -2082,7 +2082,7 @@ static LRESULT CALLBACK vt_wnd_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
     if (msg == WM_ERASEBKGND && dark_erasebkgnd(w, (HDC)wp))
         return 1;
     if (msg == WM_CTLCOLORSTATIC || msg == WM_CTLCOLORLISTBOX ||
-        msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORBUTTON) {
+        msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORBTN) {
         LRESULT dk = dark_ctlcolor((HDC)wp);
         if (dk)
             return dk;
@@ -2230,7 +2230,7 @@ static LRESULT CALLBACK vo_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
     if (msg == WM_ERASEBKGND && dark_erasebkgnd(dlg, (HDC)wp))
         return 1;
     if (msg == WM_CTLCOLORSTATIC || msg == WM_CTLCOLORLISTBOX ||
-        msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORBUTTON) {
+        msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORBTN) {
         LRESULT dk = dark_ctlcolor((HDC)wp);
         if (dk)
             return dk;
@@ -2498,7 +2498,7 @@ static LRESULT CALLBACK group_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         return (LRESULT)idle_br;
     }
     if (msg == WM_CTLCOLORSTATIC || msg == WM_CTLCOLORLISTBOX ||
-        msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORBUTTON) {
+        msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORBTN) {
         LRESULT dk = dark_ctlcolor((HDC)wp);
         if (dk)
             return dk;
@@ -3009,7 +3009,7 @@ static LRESULT CALLBACK hist_wnd_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
     if (msg == WM_ERASEBKGND && dark_erasebkgnd(w, (HDC)wp))
         return 1;
     if (msg == WM_CTLCOLORSTATIC || msg == WM_CTLCOLORLISTBOX ||
-        msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORBUTTON) {
+        msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORBTN) {
         LRESULT dk = dark_ctlcolor((HDC)wp);
         if (dk)
             return dk;
@@ -3033,7 +3033,7 @@ static LRESULT CALLBACK name_wnd_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
     if (msg == WM_ERASEBKGND && dark_erasebkgnd(w, (HDC)wp))
         return 1;
     if (msg == WM_CTLCOLORSTATIC || msg == WM_CTLCOLORLISTBOX ||
-        msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORBUTTON) {
+        msg == WM_CTLCOLOREDIT || msg == WM_CTLCOLORBTN) {
         LRESULT dk = dark_ctlcolor((HDC)wp);
         if (dk)
             return dk;
@@ -3113,7 +3113,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLORLISTBOX:
     case WM_CTLCOLOREDIT:
-    case WM_CTLCOLORBUTTON: {
+    case WM_CTLCOLORBTN: {
         /* dark mode: light text on dark controls (all control types) */
         LRESULT dk = dark_ctlcolor((HDC)wp);
         if (dk)
