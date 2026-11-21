@@ -643,6 +643,36 @@ static void test_favourites(void)
     remove(path);
 }
 
+static void test_channel_names(void)
+{
+    char n[CHANNEL_NAME_MAX];
+
+    snprintf(n, sizeof(n), "My Group!");
+    CHECK(channel_sanitize(n) == 9 && strcmp(n, "My_Group_") == 0,
+          "channel_sanitize maps spaces/punct to _");
+
+    snprintf(n, sizeof(n), "a-b_c9");
+    channel_sanitize(n);
+    CHECK(strcmp(n, "a-b_c9") == 0 && channel_name_usable(n),
+          "alnum/-/_ name kept and usable");
+
+    snprintf(n, sizeof(n), "sebgroup");
+    channel_sanitize(n);
+    CHECK(channel_name_usable(n), "custom group name accepted");
+
+    snprintf(n, sizeof(n), "ab");
+    channel_sanitize(n);
+    CHECK(!channel_name_usable(n), "2-char name rejected (too short)");
+
+    snprintf(n, sizeof(n), "grp1a2b3c");
+    channel_sanitize(n);
+    CHECK(!channel_name_usable(n), "reserved grp prefix rejected");
+
+    snprintf(n, sizeof(n), "");
+    channel_sanitize(n);
+    CHECK(!channel_name_usable(n), "empty name rejected (random tag instead)");
+}
+
 int main(void)
 {
     test_sha256_vectors();
@@ -659,6 +689,7 @@ int main(void)
     test_chat_roundtrip();
     test_ratings();
     test_group_state();
+    test_channel_names();
     printf("\n%s (%d failures)\n", fails ? "TESTS FAILED" : "ALL TESTS PASSED", fails);
     return fails ? 1 : 0;
 }

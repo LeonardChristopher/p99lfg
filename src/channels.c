@@ -6,6 +6,25 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <ctype.h>
+
+size_t channel_sanitize(char *name)
+{
+    for (char *p = name; *p; p++)
+        if (!isalnum((unsigned char)*p) && *p != '-' && *p != '_')
+            *p = '_';
+    return strlen(name);
+}
+
+int channel_name_usable(const char *name)
+{
+    size_t n = strlen(name);
+    if (n < 3 || n >= CHANNEL_NAME_MAX)
+        return 0;
+    if (name[0] == 'g' && name[1] == 'r' && name[2] == 'p')
+        return 0; /* reserved: auto tags are grpXXXXXX */
+    return 1;
+}
 
 #define CHANNEL_KIND 9  /* regular event: every message persists. 30000-39999 are REPLACEABLE (same pubkey+kind+d deletes the previous event on the relay) - using 30083 here silently deleted older messages and let chat replace pending join/leave control events. */
 #define CHANNEL_PREFIX "p99lfg-g-"
