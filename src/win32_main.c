@@ -290,12 +290,18 @@ static void presence_set_user(const char *name, const char *user)
         }
 }
 
-static const char *presence_pubkey(const char *name)
+static const PresenceEntry *presence_find(const char *name)
 {
     for (int i = 0; i < g_npresence; i++)
         if (strcmp(g_presence[i].name, name) == 0)
-            return g_presence[i].pubkey;
-    return "";
+            return &g_presence[i];
+    return NULL;
+}
+
+static const char *presence_pubkey(const char *name)
+{
+    const PresenceEntry *p = presence_find(name);
+    return p ? p->pubkey : "";
 }
 
 static void presence_touch(const char *name, uint64_t when)
@@ -1839,12 +1845,37 @@ static void on_invite(const char *name, int wait)
                     "p99lfg", MB_ICONINFORMATION);
         return;
     }
-    const char *pk = presence_pubkey(name);
-    if (!pk || !pk[0]) {
-        MessageBoxA(g_hwnd,
-                    "That player doesn't use the app (no Nostr identity known) -\n"
-                    "only app users can be invited.",
-                    "p99lfg", MB_ICONINFORMATION);
+    const PresenceEntry *pe = presence_find(name);
+    const char *pk = pe ? pe->pubkey : "";
+    if (!pk[0]) {
+        /* two different situations: we have a presence row but no key
+         * (only ever seen via EQ log scan / manual add), or no row at
+         * all (stale event dropped / never received). Log which one so
+         * p99lfg.log tells us why the invite failed. */
+        if (pe)
+            log_printf("invite: '%s' has a presence row but NO pubkey "
+                       "(log-scan/manual only; last_seen=%llu)\n",
+                       name, (unsigned long long)pe->last_seen);
+        else
+            log_printf("invite: '%s' has NO presence row at all "
+                       "(no app event received - check relay status)\n", name);
+        int online = 0;
+        for (int i = 0; i < g_sync.nrelays; i++)
+            if (g_sync.relays[i].connected)
+                online++;
+        char msg[320];
+        if (pe)
+            snprintf(msg, sizeof(msg),
+                     "'%s' is only known from your EQ log scan / manual add -\n"
+                     "no app identity received yet. App users show [ON]/[recent]\n"
+                     "in the list. Status bar says Relays: %d/%d online.",
+                     name, online, g_sync.nrelays);
+        else
+            snprintf(msg, sizeof(msg),
+                     "No app event received for '%s' (stale or never seen).\n"
+                     "Status bar says Relays: %d/%d online - refresh the list.",
+                     name, online, g_sync.nrelays);
+        MessageBoxA(g_hwnd, msg, "p99lfg", MB_ICONINFORMATION);
         return;
     }
     char myname[64] = "Player";
