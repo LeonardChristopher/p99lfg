@@ -1,5 +1,11 @@
 #ifndef P99LFG_VOICE_H
 #define P99LFG_VOICE_H
+#include <stdint.h>
+/* Socket handle: int on POSIX, but a 64-bit SOCKET on Win64 - storing it in
+ * an int truncates and can go negative, which silently kills all voice
+ * I/O (every check was 'sock < 0'). intptr_t holds it losslessly on both. */
+typedef intptr_t VoiceSock;
+#define VOICE_SOCK_INVALID ((VoiceSock)-1) /* == INVALID_SOCKET truncated */
 /* Group voice transport groundwork (ROADMAP doc section 2, phase 1).
  *
  * Design decisions from the doc, honoured here:
@@ -38,7 +44,7 @@ typedef struct {
 } VoicePeer;
 
 typedef struct {
-    int sock;                     /* UDP socket, or -1 */
+    VoiceSock sock;               /* UDP socket, or VOICE_SOCK_INVALID */
     int port;                     /* bound port (for advertising) */
     char local_ip[64];            /* our own advertised IP: frames addressed
                                    * to it are sent via 127.0.0.1 instead

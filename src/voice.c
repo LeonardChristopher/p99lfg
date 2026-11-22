@@ -19,21 +19,45 @@
 #include <windows.h>
 #include <wincrypt.h>
 typedef int socklen_t;
-#define CLOSESOCK closesocket
+#define CLOSESOCK(s) closesocket((SOCKET)(s))
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 typedef int SOCKET;
-#define CLOSESOCK close
+#define CLOSESOCK(s) close((int)(s))
 #define INVALID_SOCKET (-1)
 #endif
+
+/* sendto/recvfrom take SOCKET (64-bit on Win64) vs int (POSIX): wrap so the
+ * VoiceSock field converts cleanly on both */
+static ssize_t voice_sendto(VoiceSock s, const void *buf, size_t len,
+                            const struct sockaddr *to, socklen_t tolen)
+{
+#ifdef _WIN32
+    int r = sendto((SOCKET)s, (const char *)buf, (int)len, 0, to, (int)tolen);
+    return r < 0 ? -1 : r;
+#else
+    return sendto((int)s, buf, len, 0, to, tolen);
+#endif
+}
+
+static ssize_t voice_recvfrom(VoiceSock s, void *buf, size_t len,
+                              struct sockaddr *from, socklen_t *flen)
+{
+#ifdef _WIN32
+    int r = recvfrom((SOCKET)s, (char *)buf, (int)len, 0, from, (int *)flen);
+    return r < 0 ? -1 : r;
+#else
+    return recvfrom((int)s, buf, len, 0, from, flen);
+#endif
+}
 
 void voice_init(VoiceState *v)
 {
     memset(v, 0, sizeof(*v));
-    v->sock = -1;
+    v->sock = VOICE_SOCK_INVALID;
 }
 
 void voice_rx_stats(const VoiceState *v, uint32_t *pkts, uint32_t *bad,
@@ -51,13 +75,13 @@ void voice_set_local_ip(VoiceState *v, const char *ip)
 
 int voice_open(VoiceState *v)
 {
-    if (v->sock >= 0 && v->port > 0)
+    if (v->sock != VOICE_SOCK_INVALID && v->port > 0)
         return 0; /* genuinely open: bound and has a real port */
-    if (v->sock >= 0 && v->port == 0) {
+    if (v->sock != VOICE_SOCK_INVALID && v->port == 0) {
         /* zero/uninitialized state leaked a handle: close and rebind so
          * we always advertise a real port */
         CLOSESOCK(v->sock);
-        v->sock = -1;
+        v->sock = VOICE_SOCK_INVALID;
     }
     SOCKET s = socket(AF_INET, SOCK_DGRAM, 0);
     if (s == INVALID_SOCKET)
@@ -77,7 +101,7 @@ int voice_open(VoiceState *v)
         CLOSESOCK(s);
         return -1;
     }
-    v->sock = (int)s;
+    v->sock = (VoiceSock)s; /* full 64-bit handle on Win64 - do NOT truncate to int */
     v->port = ntohs(bound.sin_port);
 #ifdef _WIN32
     /* MSG_DONTWAIT doesn't exist on Windows: make the socket
@@ -90,9 +114,9 @@ int voice_open(VoiceState *v)
 
 void voice_close(VoiceState *v)
 {
-    if (v->sock >= 0) {
+    if (v->sock != VOICE_SOCK_INVALID) {
         CLOSESOCK(v->sock);
-        v->sock = -1;
+        v->sock = VOICE_SOCK_INVALID;
     }
     v->npeers = 0;
     v->port = 0;
@@ -202,7 +226,7 @@ int voice_send_frame(VoiceState *v, const char *peer_pubkey,
                      const char *my_privkey,
                      const uint8_t *frame, size_t len, uint32_t stamp_ms)
 {
-    if (v->sock < 0 || len == 0 || len > VOICE_FRAME_MAX)
+    if (v->sock == VOICE_SOCK_INVALID || len == 0 || len > VOICE_FRAME_MAX)
         return -1;
     VoicePeer *p = NULL;
     for (int i = 0; i < v->npeers; i++)
@@ -237,8 +261,8 @@ int voice_send_frame(VoiceState *v, const char *peer_pubkey,
         host = "127.0.0.1";
     if (inet_pton(AF_INET, host, &dest.sin_addr) != 1)
         return -1;
-    ssize_t sent = sendto(v->sock, (const char *)pkt, 16 + (size_t)blen, 0,
-                          (struct sockaddr *)&dest, sizeof(dest));
+    ssize_t sent = voice_sendto(v->sock, pkt, 16 + (size_t)blen,
+                                 (struct sockaddr *)&dest, sizeof(dest));
     return sent > 0 ? 0 : -1;
 }
 
@@ -290,20 +314,21 @@ int voice_peer_register(VoiceState *v, const char *pubkey, const char *host,
 int voice_poll(VoiceState *v, const char *my_privkey,
                VoiceFrameCb cb, void *ud)
 {
-    if (v->sock < 0 || !cb)
+    if (v->sock == VOICE_SOCK_INVALID || !cb)
         return 0;
     int delivered = 0;
     for (;;) {
         uint8_t pkt[VOICE_FRAME_MAX + 64];
         struct sockaddr_in from_;
         socklen_t flen = sizeof(from_);
-        ssize_t n = recvfrom(v->sock, (char *)pkt, sizeof(pkt),
+        ssize_t n;
 #ifdef _WIN32
-                             0, /* socket is non-blocking already */
+        n = voice_recvfrom(v->sock, pkt, sizeof(pkt),
+                           (struct sockaddr *)&from_, &flen); /* non-blocking already */
 #else
-                             MSG_DONTWAIT,
+        n = recvfrom((int)v->sock, (char *)pkt, sizeof(pkt), MSG_DONTWAIT,
+                     (struct sockaddr *)&from_, &flen);
 #endif
-                             (struct sockaddr *)&from_, &flen);
         if (n < 16)
             break;
         v->rx_pkts++;
