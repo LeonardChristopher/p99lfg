@@ -1,6 +1,7 @@
 /* Audio device layer: pure PTT/level logic (portable) + WinMM
  * capture/playback (_WIN32 only). See voice_audio.h. */
 #include "voice_audio.h"
+#include <stdio.h>
 #include <string.h>
 
 int vptt_gate(int ptt_enabled, int ptt_key_down)
