@@ -33,6 +33,17 @@ void va_play_frame(const int16_t *pcm, size_t samples);
 int va_play_open(const char *device_name);
 void va_play_close(void);
 int va_play_running(void);
+
+/* Name of the actually-opened capture/playback device ("(system default)"
+ * when opened via WAVE_MAPPER), "" when closed. For UI display + logs. */
+const char *va_capture_device(void);
+const char *va_play_device(void);
+
+/* Play a short 440 Hz test tone on the given output device (NULL/empty =
+ * default). If playback is already open the tone goes through the running
+ * device; otherwise the device is opened and closed again. Blocks ~ms+120.
+ * Returns 0 on success, -1 if the device could not be opened. */
+int va_play_tone(const char *device_name, int ms);
 #endif
 
 #endif
