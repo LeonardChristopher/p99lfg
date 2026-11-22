@@ -13,6 +13,15 @@
 #define CHANNEL_NAME_MAX 32
 #define CHANNEL_MSG_MAX 512
 
+/* Sanitize a user-typed channel name in place: alnum, '-' and '_' are
+ * kept, every other byte becomes '_'. Returns the resulting length. */
+size_t channel_sanitize(char *name);
+
+/* A sanitized name is usable as a custom group tag when it is
+ * 3..CHANNEL_NAME_MAX-1 chars long and does not start with the reserved
+ * "grp" prefix (auto-generated tags are grpXXXXXX). */
+int channel_name_usable(const char *name);
+
 typedef struct {
     char name[CHANNEL_NAME_MAX];   /* tag suffix, e.g. "sebgroup" */
     int is_raid;

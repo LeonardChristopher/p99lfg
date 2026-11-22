@@ -1835,9 +1835,7 @@ static void on_group_join(HWND dlg)
     if (!ch[0])
         return;
     /* sanitize: the channel becomes a tag */
-    for (char *p = ch; *p; p++)
-        if (!isalnum((unsigned char)*p) && *p != '-' && *p != '_')
-            *p = '_';
+    channel_sanitize(ch);
     snprintf(g_group_name, sizeof(g_group_name), "%s", ch);
     g_group_log_text[0] = '\0';
     /* fresh channel: reset any previous channel's roster state */
@@ -1856,11 +1854,22 @@ static void on_group_join(HWND dlg)
 
 static void on_group_create(HWND dlg)
 {
-    /* leader flow: create a fresh group with a unique channel tag */
-    char tag[16];
-    srand((unsigned)time(NULL) ^ (unsigned)GetTickCount());
-    snprintf(tag, sizeof(tag), "grp%06x", (unsigned)(rand() & 0xffffff));
-    snprintf(g_group_name, sizeof(g_group_name), "%s", tag);
+    /* leader flow: create a fresh group. If the Channel box holds a
+     * name, use it as the tag - friends then join by typing the same
+     * name in the Channel box + Join. Empty or rejected name (too short
+     * / reserved "grp" prefix) => random unique grpXXXXXX tag. */
+    char want[CHANNEL_NAME_MAX] = "";
+    if (g_group_channel)
+        GetWindowTextA(g_group_channel, want, sizeof(want));
+    channel_sanitize(want);
+    int custom = want[0] && channel_name_usable(want);
+    if (custom) {
+        snprintf(g_group_name, sizeof(g_group_name), "%s", want);
+    } else {
+        srand((unsigned)time(NULL) ^ (unsigned)GetTickCount());
+        snprintf(g_group_name, sizeof(g_group_name), "grp%06x",
+                 (unsigned)(rand() & 0xffffff));
+    }
     g_group_log_text[0] = '\0';
     g_group_nmembers = 0;
     g_group_nwait = 0;
@@ -1876,15 +1885,28 @@ static void on_group_create(HWND dlg)
     group_state_publish(&g_sync, g_group_name, g_group_members,
                         g_group_nmembers, g_group_wait, g_group_nwait);
     char title[128];
-    snprintf(title, sizeof(title), "Group: %s (you are the leader)", tag);
+    snprintf(title, sizeof(title), "Group: %s (you are the leader)", g_group_name);
     SetWindowTextA(dlg, title);
-    char welcome[160];
-    snprintf(welcome, sizeof(welcome),
-             "--- group %s created ---\r\nRight-click players in the LFG list to invite them.\r\n",
-             tag);
+    char welcome[320];
+    if (custom)
+        snprintf(welcome, sizeof(welcome),
+                 "--- group '%s' created ---\r\n"
+                 "Share the name: friends join by typing '%s' in the Channel box + Join.\r\n"
+                 "Or right-click players in the LFG list to invite them.\r\n",
+                 g_group_name, g_group_name);
+    else if (want[0])
+        snprintf(welcome, sizeof(welcome),
+                 "--- group %s created ---\r\n"
+                 "(name '%s' too short or reserved - random tag used)\r\n"
+                 "Right-click players in the LFG list to invite them.\r\n",
+                 g_group_name, want);
+    else
+        snprintf(welcome, sizeof(welcome),
+                 "--- group %s created ---\r\nRight-click players in the LFG list to invite them.\r\n",
+                 g_group_name);
     group_log_append(welcome);
     if (g_group_channel)
-        SetWindowTextA(g_group_channel, tag);
+        SetWindowTextA(g_group_channel, g_group_name);
     group_roster_refresh();
     group_refresh();
 }
@@ -2644,6 +2666,8 @@ static void on_group_window(void)
                  65, 10, 140, 22, dlg, (HMENU)ID_GROUP_CHANNEL, NULL, NULL);
     CreateWindowA("BUTTON", "Join", WS_CHILD | WS_VISIBLE,
                  210, 9, 60, 24, dlg, (HMENU)ID_GROUP_JOIN, NULL, NULL);
+    CreateWindowA("STATIC", "name it + Create group; empty = random tag",
+                 WS_CHILD | WS_VISIBLE, 278, 12, 138, 30, dlg, NULL, NULL, NULL);
     g_group_log = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
                  WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_READONLY | WS_VSCROLL,
                  10, 40, 400, 260, dlg, (HMENU)ID_GROUP_LOG, NULL, NULL);
