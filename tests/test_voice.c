@@ -97,6 +97,26 @@ int main(void)
     CHECK(g_last_len == sizeof(reply) && memcmp(g_last_frame, reply, sizeof(reply)) == 0,
           "reply payload intact");
 
+    /* RX-stage stats: pkts counted, nothing bad/undecryptable */
+    {
+        uint32_t pkts = 0, bad = 0, undec = 0;
+        voice_rx_stats(&b, &pkts, &bad, &undec);
+        CHECK(pkts == 1 && bad == 0 && undec == 0,
+              "rx stats: 1 pkt, 0 bad, 0 undecryptable after good exchange");
+    }
+
+    /* same-machine: if the peer's advertised IP is our own local IP, the
+     * frame is sent via 127.0.0.1 (hairpin) instead of the possibly
+     * unroutable local address */
+    snprintf(a.local_ip, sizeof(a.local_ip), "192.0.2.77");
+    snprintf(pa->host, sizeof(pa->host), "192.0.2.77"); /* B advertises our IP */
+    CHECK(voice_send_frame(&a, b_pk, a_sk, frame, sizeof(frame), 777) == 0,
+          "send toward own advertised IP still goes out (as loopback)");
+    got = voice_poll(&b, b_sk, frame_cb, NULL);
+    CHECK(got == 1, "B receives frame A addressed to the shared local IP");
+    snprintf(pa->host, sizeof(pa->host), "%s", loop);
+    snprintf(a.local_ip, sizeof(a.local_ip), "");
+
     /* dedup: same seq replayed must not double-deliver (each send has a
      * fresh seq, so simulate by resending the same datagram via loop) */
     CHECK(voice_poll(&a, a_sk, frame_cb, NULL) == 0, "empty poll delivers nothing");

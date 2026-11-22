@@ -237,6 +237,7 @@ static WNDPROC g_group_input_proc;
 static WNDPROC g_chat_input_proc;
 static LRESULT CALLBACK group_input_subclassProc(HWND h, UINT msg, WPARAM wp, LPARAM lp);
 static LRESULT CALLBACK chat_input_subclassProc(HWND h, UINT msg, WPARAM wp, LPARAM lp);
+static void va_capture_cb(const int16_t *pcm, size_t samples, void *ud);
 
 
 static ChatPeer *chat_peer_get(const char *pubkey, const char *name)
@@ -410,6 +411,8 @@ static const char *presence_mark(const char *name)
 #define ID_VO_KEY 273
 #define ID_VO_OK 274
 #define ID_VO_CANCEL 275
+#define ID_VO_TESTSND 276
+#define ID_VO_ACTIVE 277
 #define ID_ROSTER_INV_ALLOW 263
 #define ID_ROSTER_INV_DISALLOW 264
 #define ID_ROSTER_PROMOTE 267
@@ -2026,6 +2029,12 @@ static void vt_refresh_label(void)
         "TX frames sent:      %d\r\n", g_voice_tx_frames - g_vt_tx_start);
     off += snprintf(lbl + off, sizeof(lbl) - off,
         "RX frames received: %d\r\n", g_voice_rx_frames - g_vt_rx_start);
+    {
+        uint32_t pkts, bad, undec;
+        voice_rx_stats(&g_voice, &pkts, &bad, &undec);
+        off += snprintf(lbl + off, sizeof(lbl) - off,
+            "UDP: %u pkts, %u bad, %u undecryptable\r\n", pkts, bad, undec);
+    }
     off += snprintf(lbl + off, sizeof(lbl) - off,
         "loopback test: %s\r\n",
         g_vt_looping ? "RUNNING (talk; you should hear yourself)" : "stopped");
@@ -2227,6 +2236,31 @@ static LRESULT CALLBACK vo_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             SetFocus(dlg);
             return 0;
         }
+        if (id == ID_VO_TESTSND) {
+            /* play a tone on the output device selected in the combo
+             * (index 0 = system default) so the user can hear which
+             * driver it really goes to */
+            char outp[160] = "";
+            LRESULT oi = SendMessageA(g_vo_out, CB_GETCURSEL, 0, 0);
+            if (oi != CB_ERR && oi > 0)
+                SendMessageA(g_vo_out, CB_GETLBTEXT, oi, (LPARAM)outp);
+            if (va_play_tone(outp, 700) != 0) {
+                char msg[256];
+                snprintf(msg, sizeof(msg),
+                         "Could not open output device '%s'.\n"
+                         "Pick another device or (System default).",
+                         outp[0] ? outp : "(System default)");
+                MessageBoxA(dlg, msg, "p99lfg", MB_ICONERROR);
+            } else {
+                char msg[256];
+                snprintf(msg, sizeof(msg),
+                         "Played a 0.7s test tone on '%s'.\n"
+                         "If you heard it there, that is the active output.",
+                         outp[0] ? outp : "(System default)");
+                MessageBoxA(dlg, msg, "p99lfg", MB_ICONINFORMATION);
+            }
+            return 0;
+        }
         if (id == ID_GROUP_VTEST) {
             on_voice_test();
             return 0;
@@ -2247,6 +2281,40 @@ static LRESULT CALLBACK vo_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
                 g_settings.voice_ptt =
                     SendMessageA(g_vo_ptt, BM_GETCHECK, 0, 0) == BST_CHECKED;
                 settings_save(&g_settings, g_inipath);
+                /* voice running: apply the new devices immediately instead
+                 * of waiting for a voice off/on cycle */
+                if (g_voice_on) {
+                    int play_was = va_play_running();
+                    va_play_close();
+                    va_capture_close();
+                    if (va_capture_open(g_settings.voice_mic, va_capture_cb,
+                                         NULL) != 0)
+                        MessageBoxA(dlg, "Could not reopen the selected microphone.",
+                                    "p99lfg", MB_ICONERROR);
+                    else
+                        log_printf("voice: mic reopened on '%s'\n",
+                                   va_capture_device());
+                    if (va_play_open(g_settings.voice_output) != 0) {
+                        MessageBoxA(dlg, "Could not open the selected speakers.\n"
+                                    "Voice continues without sound output.",
+                                    "p99lfg", MB_ICONERROR);
+                        log_printf("voice: FAILED to reopen output '%s'\n",
+                                   g_settings.voice_output[0]
+                                       ? g_settings.voice_output
+                                       : "(system default)");
+                    } else {
+                        log_printf("voice: output reopened on '%s' (was %s)\n",
+                                   va_play_device(),
+                                   play_was ? "open" : "closed");
+                        if (g_group_wnd) {
+                            char note[160];
+                            snprintf(note, sizeof(note),
+                                     "--- voice: speakers now '%s' ---\r\n",
+                                     va_play_device());
+                            group_log_append(note);
+                        }
+                    }
+                }
             }
             DestroyWindow(dlg);
             return 0;
@@ -2293,10 +2361,14 @@ static void on_voice_options(HWND parent)
                                 130, 76, 120, 24, dlg, (HMENU)ID_VO_KEY, NULL, NULL);
     CreateWindowA("BUTTON", "Test...", WS_CHILD | WS_VISIBLE,
                   5, 130, 70, 24, dlg, (HMENU)ID_GROUP_VTEST, NULL, NULL);
+    CreateWindowA("BUTTON", "Test speakers", WS_CHILD | WS_VISIBLE,
+                  80, 130, 85, 24, dlg, (HMENU)ID_VO_TESTSND, NULL, NULL);
     CreateWindowA("BUTTON", "OK", WS_CHILD | WS_VISIBLE,
-                  80, 130, 70, 24, dlg, (HMENU)ID_VO_OK, NULL, NULL);
+                  170, 130, 70, 24, dlg, (HMENU)ID_VO_OK, NULL, NULL);
     CreateWindowA("BUTTON", "Cancel", WS_CHILD | WS_VISIBLE,
-                  160, 130, 70, 24, dlg, (HMENU)ID_VO_CANCEL, NULL, NULL);
+                  245, 130, 70, 24, dlg, (HMENU)ID_VO_CANCEL, NULL, NULL);
+    CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE,
+                  10, 160, 310, 40, dlg, (HMENU)ID_VO_ACTIVE, NULL, NULL);
     HFONT hf = (HFONT)SendMessageA(g_hwnd, WM_GETFONT, 0, 0);
     HWND c = GetWindow(dlg, GW_CHILD);
     while (c) {
@@ -2347,6 +2419,17 @@ static void on_voice_options(HWND parent)
     vo_key_label(lbl, sizeof(lbl));
     SetWindowTextA(g_vo_keybtn, lbl);
     g_vo_capturing = 0;
+    {
+        /* show which devices are actually open right now (voice on) */
+        char act[200];
+        const char *mic = va_capture_device();
+        const char *outp = va_play_device();
+        snprintf(act, sizeof(act),
+                 "Active now: mic '%s', speakers '%s'\n"
+                 "(selections above apply when Voice is toggled on)",
+                 mic[0] ? mic : "(closed)", outp[0] ? outp : "(closed)");
+        SetDlgItemTextA(dlg, ID_VO_ACTIVE, act);
+    }
     ShowWindow(dlg, SW_SHOW);
     SetFocus(dlg);
 }
@@ -2421,6 +2504,7 @@ static void on_group_voice_toggle(HWND dlg)
                         "p99lfg", MB_ICONINFORMATION);
             return;
         }
+        log_printf("voice: mic opened on '%s'\n", va_capture_device());
         if (vcodec_open(&g_vcodec) != 0) {
             va_capture_close();
             voice_close(&g_voice);
@@ -2430,12 +2514,27 @@ static void on_group_voice_toggle(HWND dlg)
         }
         if (va_play_open(g_settings.voice_output) != 0) {
             /* mic works, speakers failed: voice without hearing */
+            log_printf("voice: FAILED to open output '%s'\n",
+                       g_settings.voice_output[0] ? g_settings.voice_output
+                                                   : "(system default)");
             group_log_append("--- voice: could not open speakers (check "
                              "Voice options) ---\r\n");
+        } else {
+            log_printf("voice: output opened on '%s'\n", va_play_device());
+            {
+                char note[160];
+                snprintf(note, sizeof(note),
+                         "--- voice: speakers '%s' ---\r\n", va_play_device());
+                group_log_append(note);
+            }
         }
         g_voice_on = 1;
         char myip[64];
         voice_local_ip(myip, sizeof(myip));
+        voice_set_local_ip(&g_voice, myip); /* same-machine peers -> 127.0.0.1 */
+        g_voice.rx_pkts = g_voice.rx_bad = g_voice.rx_undec = 0;
+        log_printf("voice: on, UDP port %d, advertised ip '%s'\n",
+                   g_voice.port, myip[0] ? myip : "(none)");
         /* greet already-known peers: opens NAT maps + lets them learn
          * our real source address even before they send */
         EnterCriticalSection(&g_voice_lock);

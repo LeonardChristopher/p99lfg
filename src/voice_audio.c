@@ -1,6 +1,7 @@
 /* Audio device layer: pure PTT/level logic (portable) + WinMM
  * capture/playback (_WIN32 only). See voice_audio.h. */
 #include "voice_audio.h"
+#include <stdio.h>
 #include <string.h>
 
 int vptt_gate(int ptt_enabled, int ptt_key_down)
@@ -25,6 +26,7 @@ int vptt_level(const int16_t *pcm, size_t samples)
 #ifdef _WIN32
 #include <windows.h>
 #include <mmsystem.h>
+#include <math.h>
 
 static HWAVEIN g_win;
 static HWAVEOUT g_wout;
@@ -32,6 +34,8 @@ static VaFrameCb g_cb;
 static void *g_ud;
 static int g_cap_open;
 static int g_play_open;
+static char g_cap_name[64];  /* resolved device name, for UI + logs */
+static char g_play_name[64];
 
 /* four rotating capture buffers: WinMM fills, callback fires, we resubmit */
 static WAVEHDR g_hdrs[4];
@@ -81,6 +85,14 @@ int va_capture_open(const char *device_name, VaFrameCb cb, void *ud)
     if (waveInOpen(&g_win, dev, &fmt, (DWORD_PTR)va_in_cb, 0,
                    CALLBACK_FUNCTION) != MMSYSERR_NOERROR)
         return -1;
+    {
+        WAVEINCAPSA caps;
+        if (dev == WAVE_MAPPER ||
+            waveInGetDevCapsA(dev, &caps, sizeof(caps)) != MMSYSERR_NOERROR)
+            snprintf(g_cap_name, sizeof(g_cap_name), "(system default)");
+        else
+            snprintf(g_cap_name, sizeof(g_cap_name), "%s", caps.szPname);
+    }
     g_cb = cb;
     g_ud = ud;
     g_cap_open = 1;
@@ -111,6 +123,12 @@ void va_capture_close(void)
     }
     waveInClose(g_win);
     g_win = NULL;
+    g_cap_name[0] = '\0';
+}
+
+const char *va_capture_device(void)
+{
+    return g_cap_open ? g_cap_name : "";
 }
 
 /* playback: jitter-cushioned queue. Frames arrive in bursts (network
@@ -151,6 +169,14 @@ int va_play_open(const char *device_name)
     fmt.nAvgBytesPerSec = VOICE_AUDIO_RATE * 2;
     if (waveOutOpen(&g_wout, dev, &fmt, 0, 0, CALLBACK_NULL) != MMSYSERR_NOERROR)
         return -1;
+    {
+        WAVEOUTCAPSA caps;
+        if (dev == WAVE_MAPPER ||
+            waveOutGetDevCapsA(dev, &caps, sizeof(caps)) != MMSYSERR_NOERROR)
+            snprintf(g_play_name, sizeof(g_play_name), "(system default)");
+        else
+            snprintf(g_play_name, sizeof(g_play_name), "%s", caps.szPname);
+    }
     g_play_open = 1;
     g_obuf = 0;
     g_oplayed = 0;
@@ -201,10 +227,43 @@ void va_play_close(void)
     waveOutClose(g_wout);
     g_wout = NULL;
     g_play_open = 0;
+    g_play_name[0] = '\0';
 }
 
 int va_play_running(void)
 {
     return g_play_open;
+}
+
+const char *va_play_device(void)
+{
+    return g_play_open ? g_play_name : "";
+}
+
+int va_play_tone(const char *device_name, int ms)
+{
+    int opened_here = 0;
+    if (!g_play_open) {
+        if (va_play_open(device_name) != 0)
+            return -1;
+        opened_here = 1;
+    }
+    if (ms < VOICE_AUDIO_FRAME_MS)
+        ms = VOICE_AUDIO_FRAME_MS;
+    int frames = ms / VOICE_AUDIO_FRAME_MS;
+    if (frames < 1)
+        frames = 1;
+    int16_t pcm[VOICE_AUDIO_SAMPLES];
+    for (int f = 0; f < frames; f++) {
+        for (int i = 0; i < VOICE_AUDIO_SAMPLES; i++) {
+            double t = (double)(f * VOICE_AUDIO_SAMPLES + i) / VOICE_AUDIO_RATE;
+            pcm[i] = (int16_t)(8000.0 * sin(2.0 * 3.14159265358979 * 440.0 * t));
+        }
+        va_play_frame(pcm, VOICE_AUDIO_SAMPLES);
+    }
+    Sleep((DWORD)(ms + 120)); /* let the jitter cushion drain */
+    if (opened_here)
+        va_play_close();
+    return 0;
 }
 #endif
