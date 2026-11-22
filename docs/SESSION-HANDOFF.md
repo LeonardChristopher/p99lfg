@@ -608,3 +608,27 @@ Known rough edges to consider: group window layout is fixed-position;
 waitlist has no UI for the leader to promote manually (auto-promotes on
 leave only); `g_pending_popup` is a single slot (two popups in the same
 poll cycle overwrite each other - acceptable).
+
+---
+
+## 13. State after 2026-11-22 consolidation (main = 9194952)
+
+Merged to main (all CI-green, user-tested): PR #6 dark mode for all windows
+(live toggle), PR #7 nameable group channels (empty = random grpXXXXXX),
+PR #8 invite fix for names with spaces (lfg_row_to_name) + name_sanitize
+input hardening + invite-failure diagnostics, PR #9 voice output
+verification (Test speakers tone, Active-now devices, immediate apply on OK)
++ Win64 socket-handle fix (VoiceSock intptr_t - was silently killing all
+voice UDP I/O) + UDP rx-stage counters + same-machine 127.0.0.1 rewrite.
+
+Still DRAFT (do not merge without review): #2 web/WASM core (additive only),
+#3 CSPRNG/serialization hardening, #4 voice NAT relay, #5 UI-nonblocking
+publish (known: spools LFG posts to outbox -> slow list updates; needs an
+immediate-flush wake-up instead).
+
+Known flake (fixed in 9194952): test_voice wrong-key test could false-accept
+CBC padding (~6%); now asserts dropped-or-garbage. Proper fix is
+encrypt-then-MAC on voice frames (and chat) - roadmap item.
+
+Test exe for users: latest green build-windows run on main -> artifact
+p99lfg-windows-x64.
