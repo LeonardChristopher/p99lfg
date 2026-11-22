@@ -11,6 +11,33 @@
 
 static LfgDebugFn g_debug_fn;
 
+size_t name_sanitize(char *name)
+{
+    if (!name)
+        return 0;
+    size_t r = 0, w = 0;
+    int pending_space = 0;
+    while (name[r] == ' ' || name[r] == '\t')
+        r++; /* trim leading */
+    for (; name[r]; r++) {
+        char c = name[r];
+        if (c == ' ' || c == '\t') {
+            pending_space = 1;
+            continue;
+        }
+        if (c == ':' || c == ',' || c == '|')
+            continue; /* wire-format separators: drop */
+        if (pending_space && w > 0)
+            name[w++] = ' ';
+        pending_space = 0;
+        name[w++] = c;
+    }
+    if (w > 0 && name[w - 1] == ' ')
+        w--; /* trim trailing */
+    name[w] = '\0';
+    return w;
+}
+
 void lfg_row_to_name(const char *row, char *out, size_t outsz)
 {
     const char *p = row;
@@ -420,7 +447,10 @@ const LfgEntry *lfg_get(LfgState *s, int i)
 
 void lfg_add_manual(LfgState *s, const char *name, const char *zone, const char *detail)
 {
-    upsert(s, name, zone, detail, LFG_SRC_MANUAL, time(NULL));
+    char nm[LFG_NAME_MAX];
+    snprintf(nm, sizeof(nm), "%s", name);
+    name_sanitize(nm);
+    upsert(s, nm, zone, detail, LFG_SRC_MANUAL, time(NULL));
 }
 
 int lfg_remove(LfgState *s, const char *name)

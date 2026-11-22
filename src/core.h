@@ -55,6 +55,13 @@ void lfg_add_manual(LfgState *s, const char *name, const char *zone, const char 
 int lfg_remove(LfgState *s, const char *name);
 void lfg_remove_manual_all(LfgState *s);
 
+/* Sanitize a player/character name in place for local storage and every
+ * wire format: trim edges, collapse whitespace runs to a single space
+ * (list rows split on a double space), and drop ':', ',' and '|' (the
+ * group roster CSV is name:pubkey:officer, comma-separated; the chars file
+ * is pipe-separated). Single spaces stay allowed. Returns the length. */
+size_t name_sanitize(char *name);
+
 /* Extract the player name from a list-box row. Rows are built as
  *   "[ON] Name  [detail]  zone  (manual)"  /  "* [off] Name  (offline)" /
  *   "Name  [cls]  seen 3h ago"

@@ -457,6 +457,12 @@ static void on_remote_event(const SyncRemoteEntry *entry, const char *pubkey, vo
     (void)pubkey; (void)ud;
     if (!g_hwnd)
         return;
+    /* sanitize the name once so list, presence and roster all agree */
+    {
+        SyncRemoteEntry ev = *entry;
+        name_sanitize(ev.name);
+        entry = &ev;
+    }
     /* stale listing: remove it if present, never (re)add it */
     if (entry->created_at &&
         (uint64_t)time(NULL) - entry->created_at > LFG_EVENT_STALE_SECS) {
@@ -1175,6 +1181,14 @@ static void on_add(void)
     char name[LFG_NAME_MAX], zone[LFG_ZONE_MAX];
     GetWindowTextA(g_ed_name, name, sizeof(name));
     GetWindowTextA(g_ed_zone, zone, sizeof(zone));
+    {
+        char orig[LFG_NAME_MAX];
+        snprintf(orig, sizeof(orig), "%s", name);
+        name_sanitize(name);
+        if (strcmp(orig, name) != 0)
+            MessageBoxA(g_hwnd, "Name adjusted: removed ':', ',', '|' and extra spaces.",
+                        "p99lfg", MB_ICONINFORMATION);
+    }
     if (!name[0])
         return;
     lfg_add_manual(g_state, name, zone, "");
@@ -1247,6 +1261,14 @@ static void on_char_add(void)
     GetWindowTextA(GetDlgItem(g_hwnd, ID_CHAR_NAME), name, sizeof(name));
     GetWindowTextA(GetDlgItem(g_hwnd, ID_CHAR_CLASS), cls, sizeof(cls));
     GetWindowTextA(GetDlgItem(g_hwnd, ID_CHAR_LEVEL), lvl, sizeof(lvl));
+    {
+        char orig[CHAR_NAME_MAX];
+        snprintf(orig, sizeof(orig), "%s", name);
+        name_sanitize(name);
+        if (strcmp(orig, name) != 0)
+            MessageBoxA(g_hwnd, "Name adjusted: removed ':', ',', '|' and extra spaces.",
+                        "p99lfg", MB_ICONINFORMATION);
+    }
     int level = atoi(lvl);
     if (!name[0] || !cls[0] || level < 1 || level > 65) {
         MessageBoxA(g_hwnd,

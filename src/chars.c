@@ -1,4 +1,5 @@
 #include "chars.h"
+#include "core.h" /* name_sanitize */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,6 +54,10 @@ Character *chars_find(CharList *cl, const char *name)
 
 int chars_upsert(CharList *cl, const char *name, const char *cls, int level)
 {
+    char nm[CHAR_NAME_MAX];
+    snprintf(nm, sizeof(nm), "%s", name);
+    name_sanitize(nm);
+    name = nm;
     Character *c = chars_find(cl, name);
     if (c) {
         snprintf(c->cls, CHAR_CLASS_MAX, "%s", cls);
