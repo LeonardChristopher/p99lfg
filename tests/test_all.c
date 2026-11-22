@@ -643,6 +643,32 @@ static void test_favourites(void)
     remove(path);
 }
 
+static void test_lfg_row_names(void)
+{
+    char nm[64];
+
+    lfg_row_to_name("[ON] Seb  [60 Warlord]  ecommons", nm, sizeof(nm));
+    CHECK(strcmp(nm, "Seb") == 0, "row parse: simple name");
+
+    lfg_row_to_name("[ON] mr wallaby  [?]  -  (manual)", nm, sizeof(nm));
+    CHECK(strcmp(nm, "mr wallaby") == 0, "row parse: name containing a space");
+
+    lfg_row_to_name("* [off] mr wallaby  (offline)", nm, sizeof(nm));
+    CHECK(strcmp(nm, "mr wallaby") == 0, "row parse: favourite offline row, spaced name");
+
+    lfg_row_to_name("[recent] om nom  [?]  -  (manual)", nm, sizeof(nm));
+    CHECK(strcmp(nm, "om nom") == 0, "row parse: spaced name, [recent]");
+
+    lfg_row_to_name("mr wallaby  [Warrior]  seen 3h ago", nm, sizeof(nm));
+    CHECK(strcmp(nm, "mr wallaby") == 0, "row parse: history row, spaced name");
+
+    lfg_row_to_name("--- All LFG ---", nm, sizeof(nm));
+    CHECK(nm[0] == '\0', "row parse: section header yields empty");
+
+    lfg_row_to_name("* [ON] Seb  [60 Warlord]  ecommons", nm, sizeof(nm));
+    CHECK(strcmp(nm, "Seb") == 0, "row parse: favourite row with presence");
+}
+
 int main(void)
 {
     test_sha256_vectors();
@@ -659,6 +685,7 @@ int main(void)
     test_chat_roundtrip();
     test_ratings();
     test_group_state();
+    test_lfg_row_names();
     printf("\n%s (%d failures)\n", fails ? "TESTS FAILED" : "ALL TESTS PASSED", fails);
     return fails ? 1 : 0;
 }

@@ -11,6 +11,33 @@
 
 static LfgDebugFn g_debug_fn;
 
+void lfg_row_to_name(const char *row, char *out, size_t outsz)
+{
+    const char *p = row;
+    if (!outsz)
+        return;
+    out[0] = '\0';
+    if (!p)
+        return;
+    if (strncmp(p, "* ", 2) == 0)
+        p += 2;
+    while (*p == '[') {
+        const char *close = strchr(p, ']');
+        if (!close)
+            break;
+        p = close + 1;
+        if (*p == ' ')
+            p++;
+    }
+    if (strncmp(p, "---", 3) == 0)
+        return; /* section header: no name */
+    size_t n = 0;
+    while (p[n] && !(p[n] == ' ' && p[n + 1] == ' ') && n + 1 < outsz)
+        n++;
+    memcpy(out, p, n);
+    out[n] = '\0';
+}
+
 void lfg_set_debug(LfgDebugFn fn) { g_debug_fn = fn; }
 
 static void dbg(const char *fmt, ...)

@@ -1064,24 +1064,10 @@ static void populate_list(void)
     if (sel != LB_ERR) {
         char buf[256] = {0};
         SendMessageA(g_list, LB_GETTEXT, (WPARAM)sel, (LPARAM)buf);
-        char *name = buf;
-        if (strncmp(name, "---", 3) != 0) {
-            if (strncmp(name, "* ", 2) == 0)
-                name += 2;
-            while (*name == '[') {
-                char *close = strchr(name, ']');
-                if (!close) { name = NULL; break; }
-                name = close + 1;
-                if (*name == ' ')
-                    name++;
-            }
-            if (name) {
-                char *sp = strchr(name, ' ');
-                if (sp)
-                    *sp = '\0';
-                snprintf(sel_name, sizeof(sel_name), "%s", name);
-            }
-        }
+        char name[64] = {0};
+        lfg_row_to_name(buf, name, sizeof(name));
+        if (name[0])
+            snprintf(sel_name, sizeof(sel_name), "%s", name);
     }
 
     /* preserve the scroll: a poll rebuild used to snap the list to
@@ -1444,22 +1430,10 @@ static void on_fav_toggle(void)
         return;
     char buf[256] = {0};
     SendMessageA(g_list, LB_GETTEXT, (WPARAM)sel, (LPARAM)buf);
-    char *name = buf;
-    if (strncmp(name, "---", 3) == 0)
+    char name[64] = {0};
+    lfg_row_to_name(buf, name, sizeof(name));
+    if (!name[0])
         return;
-    if (strncmp(name, "* ", 2) == 0)
-        name += 2;
-    while (*name == '[') {           /* skip presence prefix [ON] etc. */
-        name = strchr(name, ']');
-        if (!name)
-            return;
-        name++;
-        if (*name == ' ')
-            name++;
-    }
-    char *sp = strchr(name, ' ');
-    if (sp)
-        *sp = '\0';
     fav_toggle(g_favs, name);
     populate_list();
 }
@@ -1498,22 +1472,10 @@ static void on_rate(void)
         return;
     char buf[256] = {0};
     SendMessageA(g_list, LB_GETTEXT, (WPARAM)sel, (LPARAM)buf);
-    char *name = buf;
-    if (strncmp(name, "---", 3) == 0)
+    char name[64] = {0};
+    lfg_row_to_name(buf, name, sizeof(name));
+    if (!name[0])
         return;
-    if (strncmp(name, "* ", 2) == 0)
-        name += 2;
-    while (*name == '[') {           /* skip presence prefix [ON] etc. */
-        name = strchr(name, ']');
-        if (!name)
-            return;
-        name++;
-        if (*name == ' ')
-            name++;
-    }
-    char *sp = strchr(name, ' ');
-    if (sp)
-        *sp = '\0';
     snprintf(g_rate_target, sizeof(g_rate_target), "%s", name);
 
     WNDCLASSA wc = {0};
@@ -1623,22 +1585,10 @@ static void on_chat(void)
     if (sel != LB_ERR) {
         char buf[256] = {0};
         SendMessageA(g_list, LB_GETTEXT, (WPARAM)sel, (LPARAM)buf);
-        char *name = buf;
-        if (strncmp(name, "---", 3) == 0)
+        char name[64] = {0};
+        lfg_row_to_name(buf, name, sizeof(name));
+        if (!name[0])
             return;
-        if (strncmp(name, "* ", 2) == 0)
-            name += 2;
-        while (*name == '[') {
-            name = strchr(name, ']');
-            if (!name)
-                return;
-            name++;
-            if (*name == ' ')
-                name++;
-        }
-        char *sp = strchr(name, ' ');
-        if (sp)
-            *sp = '\0';
         const char *pk = presence_pubkey(name);
         if (pk && pk[0]) {
             ChatPeer *peer = chat_peer_get(pk, name);
@@ -2481,9 +2431,10 @@ static LRESULT CALLBACK group_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             while (*nm == ' ')
                 nm++;
             if (strncmp(nm, "Group", 5) != 0 && strncmp(nm, "Waiting", 7) != 0) {
-                char *sp = strchr(nm, ' ');
-                if (sp)
-                    *sp = '\0';
+                /* name runs to the " (you)" / " (can invite)" suffix */
+                char *paren = strstr(nm, " (");
+                if (paren)
+                    *paren = '\0';
                 for (int i = 0; i < g_group_nmembers; i++)
                     if (strcmp(g_group_members[i].name, nm) == 0 &&
                         strcmp(g_group_members[i].pubkey, g_sync.pubkey) != 0) {
@@ -2933,16 +2884,9 @@ static LRESULT CALLBACK hist_wnd_proc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
         DestroyMenu(menu);
         /* remember which history row for the command handler */
         static char hist_sel_name[64];
-        char *name = buf;
-        char *sp = strchr(name, ' ');
-        if (sp) {
-            size_t n = (size_t)(sp - name);
-            if (n < sizeof(hist_sel_name)) {
-                memcpy(hist_sel_name, name, n);
-                hist_sel_name[n] = '\0';
-                SetWindowLongPtrA(w, GWLP_USERDATA, (LONG_PTR)hist_sel_name);
-            }
-        }
+        lfg_row_to_name(buf, hist_sel_name, sizeof(hist_sel_name));
+        if (hist_sel_name[0])
+            SetWindowLongPtrA(w, GWLP_USERDATA, (LONG_PTR)hist_sel_name);
         return 0;
     }
     if (msg == WM_COMMAND && LOWORD(wp) == ID_BTN_FAV) {
@@ -3214,22 +3158,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (isel != LB_ERR) {
                 char ibuf[256] = {0};
                 SendMessageA(g_list, LB_GETTEXT, (WPARAM)isel, (LPARAM)ibuf);
-                char *iname = ibuf;
-                if (strncmp(iname, "* ", 2) == 0)
-                    iname += 2;
-                while (*iname == '[') {
-                    char *close = strchr(iname, ']');
-                    if (!close) { iname = NULL; break; }
-                    iname = close + 1;
-                    if (*iname == ' ')
-                        iname++;
-                }
-                if (iname) {
-                    char *sp = strchr(iname, ' ');
-                    if (sp)
-                        *sp = '\0';
+                char iname[64] = {0};
+                lfg_row_to_name(ibuf, iname, sizeof(iname));
+                if (iname[0])
                     on_invite(iname, LOWORD(wp) == ID_INV_WAIT);
-                }
             }
             return 0;
         }
