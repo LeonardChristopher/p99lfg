@@ -672,6 +672,56 @@ static void test_channel_names(void)
     channel_sanitize(n);
     CHECK(!channel_name_usable(n), "empty name rejected (random tag instead)");
 }
+static void test_lfg_row_names(void)
+{
+    char nm[64];
+
+    lfg_row_to_name("[ON] Seb  [60 Warlord]  ecommons", nm, sizeof(nm));
+    CHECK(strcmp(nm, "Seb") == 0, "row parse: simple name");
+
+    lfg_row_to_name("[ON] mr wallaby  [?]  -  (manual)", nm, sizeof(nm));
+    CHECK(strcmp(nm, "mr wallaby") == 0, "row parse: name containing a space");
+
+    lfg_row_to_name("* [off] mr wallaby  (offline)", nm, sizeof(nm));
+    CHECK(strcmp(nm, "mr wallaby") == 0, "row parse: favourite offline row, spaced name");
+
+    lfg_row_to_name("[recent] om nom  [?]  -  (manual)", nm, sizeof(nm));
+    CHECK(strcmp(nm, "om nom") == 0, "row parse: spaced name, [recent]");
+
+    lfg_row_to_name("mr wallaby  [Warrior]  seen 3h ago", nm, sizeof(nm));
+    CHECK(strcmp(nm, "mr wallaby") == 0, "row parse: history row, spaced name");
+
+    lfg_row_to_name("--- All LFG ---", nm, sizeof(nm));
+    CHECK(nm[0] == '\0', "row parse: section header yields empty");
+
+    lfg_row_to_name("* [ON] Seb  [60 Warlord]  ecommons", nm, sizeof(nm));
+    CHECK(strcmp(nm, "Seb") == 0, "row parse: favourite row with presence");
+}
+
+static void test_name_sanitize(void)
+{
+    char n[64];
+
+    snprintf(n, sizeof(n), "mr  wallaby");
+    CHECK(name_sanitize(n) == 10 && strcmp(n, "mr wallaby") == 0,
+          "sanitize: collapse double space, keep single space");
+
+    snprintf(n, sizeof(n), "a:b,c|d e");
+    name_sanitize(n);
+    CHECK(strcmp(n, "abcd e") == 0, "sanitize: strip : , | (wire separators)");
+
+    snprintf(n, sizeof(n), "  seb  ");
+    name_sanitize(n);
+    CHECK(strcmp(n, "seb") == 0, "sanitize: trim edges");
+
+    snprintf(n, sizeof(n), "mr wallaby");
+    name_sanitize(n);
+    CHECK(strcmp(n, "mr wallaby") == 0, "sanitize: spaced name unchanged");
+
+    snprintf(n, sizeof(n), "  mr   wallaby  ");
+    name_sanitize(n);
+    CHECK(strcmp(n, "mr wallaby") == 0, "sanitize: messy spacing normalized");
+}
 
 int main(void)
 {
@@ -690,6 +740,8 @@ int main(void)
     test_ratings();
     test_group_state();
     test_channel_names();
+    test_lfg_row_names();
+    test_name_sanitize();
     printf("\n%s (%d failures)\n", fails ? "TESTS FAILED" : "ALL TESTS PASSED", fails);
     return fails ? 1 : 0;
 }
