@@ -194,6 +194,7 @@ static WNDPROC g_group_input_proc;
 static WNDPROC g_chat_input_proc;
 static LRESULT CALLBACK group_input_subclassProc(HWND h, UINT msg, WPARAM wp, LPARAM lp);
 static LRESULT CALLBACK chat_input_subclassProc(HWND h, UINT msg, WPARAM wp, LPARAM lp);
+static void va_capture_cb(const int16_t *pcm, size_t samples, void *ud);
 
 
 static ChatPeer *chat_peer_get(const char *pubkey, const char *name)
@@ -2182,6 +2183,40 @@ static LRESULT CALLBACK vo_wnd_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
                 g_settings.voice_ptt =
                     SendMessageA(g_vo_ptt, BM_GETCHECK, 0, 0) == BST_CHECKED;
                 settings_save(&g_settings, g_inipath);
+                /* voice running: apply the new devices immediately instead
+                 * of waiting for a voice off/on cycle */
+                if (g_voice_on) {
+                    int play_was = va_play_running();
+                    va_play_close();
+                    va_capture_close();
+                    if (va_capture_open(g_settings.voice_mic, va_capture_cb,
+                                         NULL) != 0)
+                        MessageBoxA(dlg, "Could not reopen the selected microphone.",
+                                    "p99lfg", MB_ICONERROR);
+                    else
+                        log_printf("voice: mic reopened on '%s'\n",
+                                   va_capture_device());
+                    if (va_play_open(g_settings.voice_output) != 0) {
+                        MessageBoxA(dlg, "Could not open the selected speakers.\n"
+                                    "Voice continues without sound output.",
+                                    "p99lfg", MB_ICONERROR);
+                        log_printf("voice: FAILED to reopen output '%s'\n",
+                                   g_settings.voice_output[0]
+                                       ? g_settings.voice_output
+                                       : "(system default)");
+                    } else {
+                        log_printf("voice: output reopened on '%s' (was %s)\n",
+                                   va_play_device(),
+                                   play_was ? "open" : "closed");
+                        if (g_group_wnd) {
+                            char note[160];
+                            snprintf(note, sizeof(note),
+                                     "--- voice: speakers now '%s' ---\r\n",
+                                     va_play_device());
+                            group_log_append(note);
+                        }
+                    }
+                }
             }
             DestroyWindow(dlg);
             return 0;
