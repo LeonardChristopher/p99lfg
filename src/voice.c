@@ -36,6 +36,19 @@ void voice_init(VoiceState *v)
     v->sock = -1;
 }
 
+void voice_rx_stats(const VoiceState *v, uint32_t *pkts, uint32_t *bad,
+                    uint32_t *undec)
+{
+    if (pkts) *pkts = v->rx_pkts;
+    if (bad) *bad = v->rx_bad;
+    if (undec) *undec = v->rx_undec;
+}
+
+void voice_set_local_ip(VoiceState *v, const char *ip)
+{
+    snprintf(v->local_ip, sizeof(v->local_ip), "%s", ip ? ip : "");
+}
+
 int voice_open(VoiceState *v)
 {
     if (v->sock >= 0 && v->port > 0)
@@ -216,7 +229,13 @@ int voice_send_frame(VoiceState *v, const char *peer_pubkey,
     memset(&dest, 0, sizeof(dest));
     dest.sin_family = AF_INET;
     dest.sin_port = htons((unsigned short)p->port);
-    if (inet_pton(AF_INET, p->host, &dest.sin_addr) != 1)
+    /* same-machine peer: the advertised IP is our own -> hairpin via
+     * loopback, otherwise the datagram can be routed into a virtual/VPN
+     * adapter and never arrive */
+    const char *host = p->host;
+    if (v->local_ip[0] && strcmp(p->host, v->local_ip) == 0)
+        host = "127.0.0.1";
+    if (inet_pton(AF_INET, host, &dest.sin_addr) != 1)
         return -1;
     ssize_t sent = sendto(v->sock, (const char *)pkt, 16 + (size_t)blen, 0,
                           (struct sockaddr *)&dest, sizeof(dest));
@@ -287,13 +306,18 @@ int voice_poll(VoiceState *v, const char *my_privkey,
                              (struct sockaddr *)&from_, &flen);
         if (n < 16)
             break;
-        if (get_u32(pkt) != VOICE_MAGIC)
+        v->rx_pkts++;
+        if (get_u32(pkt) != VOICE_MAGIC) {
+            v->rx_bad++;
             continue;
+        }
         uint32_t seq = get_u32(pkt + 4);
         uint32_t stamp = get_u32(pkt + 8);
         uint32_t blen = get_u32(pkt + 12);
-        if ((size_t)16 + blen > (size_t)n || blen < 32)
+        if ((size_t)16 + blen > (size_t)n || blen < 32) {
+            v->rx_bad++;
             continue;
+        }
         /* find the peer by UDP address (we don't sign packets in v1;
          * identity is bound by the ECDH key: only a holder of the
          * peer's private key can produce a decryptable frame, and the
@@ -337,8 +361,10 @@ int voice_poll(VoiceState *v, const char *my_privkey,
                 }
             }
         }
-        if (!match || fl <= 0)
+        if (!match || fl <= 0) {
+            v->rx_undec++;
             continue;
+        }
         if (match) {
             if (match->last_seq < seq)
                 match->last_seq = seq;

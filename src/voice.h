@@ -40,14 +40,30 @@ typedef struct {
 typedef struct {
     int sock;                     /* UDP socket, or -1 */
     int port;                     /* bound port (for advertising) */
+    char local_ip[64];            /* our own advertised IP: frames addressed
+                                   * to it are sent via 127.0.0.1 instead
+                                   * (same-machine peers) */
     VoicePeer peers[VOICE_PEERS_MAX];
     int npeers;
+    /* RX-stage diagnostics (see voice_rx_stats): pkts = datagrams with a
+     * valid-looking header, bad = wrong magic/length, undec = no peer
+     * matched or decrypt failed */
+    uint32_t rx_pkts, rx_bad, rx_undec;
 } VoiceState;
 
 void voice_init(VoiceState *v);
 /* Open the UDP socket (bind ephemeral). Returns 0 on success. */
 int voice_open(VoiceState *v);
 void voice_close(VoiceState *v);
+
+/* RX-stage counters (diagnostics for "mic works but RX=0"):
+ * pkts = datagrams seen, bad = wrong magic/length, undec = no matching
+ * peer or decrypt failed. pkts==0 means nothing arrived at all. */
+void voice_rx_stats(const VoiceState *v, uint32_t *pkts, uint32_t *bad,
+                    uint32_t *undec);
+/* Record our own advertised IP: frames addressed to it are looped back
+ * via 127.0.0.1 (two app instances on the same machine). */
+void voice_set_local_ip(VoiceState *v, const char *ip);
 
 /* Encrypt+send one frame to a peer (dtls-free: AES-256-CBC under the
  * pairwise ECDH secret, same as chat). Returns 0 on success. */

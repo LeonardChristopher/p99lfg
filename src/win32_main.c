@@ -1945,6 +1945,12 @@ static void vt_refresh_label(void)
         "TX frames sent:      %d\r\n", g_voice_tx_frames - g_vt_tx_start);
     off += snprintf(lbl + off, sizeof(lbl) - off,
         "RX frames received: %d\r\n", g_voice_rx_frames - g_vt_rx_start);
+    {
+        uint32_t pkts, bad, undec;
+        voice_rx_stats(&g_voice, &pkts, &bad, &undec);
+        off += snprintf(lbl + off, sizeof(lbl) - off,
+            "UDP: %u pkts, %u bad, %u undecryptable\r\n", pkts, bad, undec);
+    }
     off += snprintf(lbl + off, sizeof(lbl) - off,
         "loopback test: %s\r\n",
         g_vt_looping ? "RUNNING (talk; you should hear yourself)" : "stopped");
@@ -2425,6 +2431,10 @@ static void on_group_voice_toggle(HWND dlg)
         g_voice_on = 1;
         char myip[64];
         voice_local_ip(myip, sizeof(myip));
+        voice_set_local_ip(&g_voice, myip); /* same-machine peers -> 127.0.0.1 */
+        g_voice.rx_pkts = g_voice.rx_bad = g_voice.rx_undec = 0;
+        log_printf("voice: on, UDP port %d, advertised ip '%s'\n",
+                   g_voice.port, myip[0] ? myip : "(none)");
         /* greet already-known peers: opens NAT maps + lets them learn
          * our real source address even before they send */
         EnterCriticalSection(&g_voice_lock);
